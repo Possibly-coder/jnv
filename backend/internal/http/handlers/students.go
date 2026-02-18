@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"net/http"
+	"regexp"
+	"strings"
 	"strconv"
 	"time"
 
@@ -23,6 +25,8 @@ type createStudentRequest struct {
 	ParentPhone   string `json:"parent_phone"`
 	AdmissionYear int    `json:"admission_year"`
 }
+
+var phoneDigitsRegex = regexp.MustCompile(`^[0-9]+$`)
 
 func (h StudentsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	user := httpctx.UserFromContext(r.Context())
@@ -49,6 +53,12 @@ func (h StudentsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	normalizedPhone, err := normalizeParentPhone(req.ParentPhone)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	dateOfBirth, err := time.Parse("2006-01-02", req.DateOfBirth)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "date_of_birth must be YYYY-MM-DD")
@@ -65,7 +75,7 @@ func (h StudentsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		RollNumber:    req.RollNumber,
 		DateOfBirth:   dateOfBirth,
 		House:         req.House,
-		ParentPhone:   req.ParentPhone,
+		ParentPhone:   normalizedPhone,
 		AdmissionYear: req.AdmissionYear,
 	})
 	if err != nil {
@@ -73,6 +83,43 @@ func (h StudentsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, student)
+}
+
+func normalizeParentPhone(value string) (string, error) {
+	input := strings.TrimSpace(value)
+	if input == "" {
+		return "", nil
+	}
+
+	if strings.HasPrefix(input, "+91") {
+		digits := strings.TrimPrefix(input, "+91")
+		if len(digits) != 10 || !phoneDigitsRegex.MatchString(digits) {
+			return "", errInvalidPhoneFormat()
+		}
+		return "+91" + digits, nil
+	}
+
+	if len(input) == 12 && strings.HasPrefix(input, "91") && phoneDigitsRegex.MatchString(input) {
+		return "+" + input, nil
+	}
+
+	if len(input) == 10 && phoneDigitsRegex.MatchString(input) {
+		return input, nil
+	}
+
+	return "", errInvalidPhoneFormat()
+}
+
+func errInvalidPhoneFormat() error {
+	return &validationError{message: "parent_phone must be 10 digits, 91XXXXXXXXXX, or +91XXXXXXXXXX"}
+}
+
+type validationError struct {
+	message string
+}
+
+func (e *validationError) Error() string {
+	return e.message
 }
 
 func (h StudentsHandler) List(w http.ResponseWriter, r *http.Request) {

@@ -130,10 +130,16 @@ export default function App() {
     try {
       setStatus('Loading pending parent links...');
       const items = await getJSON('/api/v1/parent-links/pending');
+      if (!Array.isArray(items)) {
+        setPendingLinks([]);
+        setStatus('No request data returned from server.');
+        return;
+      }
       setPendingLinks(items as ParentLink[]);
       setStatus('Pending links loaded.');
     } catch (err) {
       setStatus(`Error: ${(err as Error).message}`);
+      setPendingLinks([]);
     }
   };
 
@@ -175,6 +181,17 @@ export default function App() {
       if (!studentFullName || !studentClass || !studentRoll || !studentDob) {
         setStatus('Please fill required student fields.');
         return;
+      }
+      if (studentParentPhone) {
+        const normalized = studentParentPhone.trim();
+        const valid =
+          /^[0-9]{10}$/.test(normalized) ||
+          /^91[0-9]{10}$/.test(normalized) ||
+          /^\+91[0-9]{10}$/.test(normalized);
+        if (!valid) {
+          setStatus('Parent phone must be 10 digits, 91XXXXXXXXXX, or +91XXXXXXXXXX.');
+          return;
+        }
       }
       setStatus('Creating student...');
       await postJSON('/api/v1/students', {
@@ -354,6 +371,7 @@ export default function App() {
               <input
                 value={studentParentPhone}
                 onChange={(event) => setStudentParentPhone(event.target.value)}
+                maxLength={13}
                 placeholder="+9198..."
               />
             </label>
@@ -639,7 +657,7 @@ export default function App() {
                   <p>
                     Student: {link.student_name || link.student_id} • {link.class_label} • Roll {link.roll_number}
                   </p>
-                  <p>Requested: {new Date(link.created_at).toLocaleString()}</p>
+                  <p>Requested: {formatDate(link.created_at)}</p>
                 </div>
                 <button
                   className="app__button app__button--primary"
@@ -655,4 +673,11 @@ export default function App() {
       {status ? <div className="status-bar">{status}</div> : null}
     </div>
   );
+}
+
+function formatDate(value: string) {
+  if (!value) return 'Unknown';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Unknown';
+  return parsed.toLocaleString();
 }
