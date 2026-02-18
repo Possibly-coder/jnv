@@ -6,6 +6,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+const kApiBaseUrl = 'https://jnv-web.onrender.com';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const JnvApp());
@@ -39,7 +41,6 @@ class AuthGate extends StatefulWidget {
 class _AuthGateState extends State<AuthGate> {
   static const _storage = FlutterSecureStorage();
   static const _sessionKey = 'jnv_session_user';
-  static const _apiBaseKey = 'jnv_api_base';
   static const _authTokenKey = 'jnv_auth_token';
 
   bool _isAuthenticated = false;
@@ -50,7 +51,11 @@ class _AuthGateState extends State<AuthGate> {
   SessionUser? _sessionUser;
   ParentStudent? _linkedStudent;
   List<ParentScore> _linkedScores = const [];
-  String _apiBase = 'http://192.168.1.8:8080';
+  List<ParentAnnouncement> _announcements = const [];
+  List<ParentEvent> _events = const [];
+  ParentAppConfig _appConfig =
+      const ParentAppConfig(featureFlags: {}, dashboardWidgets: []);
+  String _apiBase = kApiBaseUrl;
   String _authToken = '';
 
   @override
@@ -77,16 +82,13 @@ class _AuthGateState extends State<AuthGate> {
   Future<void> _restoreSession() async {
     setState(() => _isLoadingOverview = true);
     try {
-      final savedApiBase = await _storage.read(key: _apiBaseKey);
       final sessionRaw = await _storage.read(key: _sessionKey);
       final savedAuthToken = await _storage.read(key: _authTokenKey);
-      if (savedApiBase != null && savedApiBase.isNotEmpty) {
-        _apiBase = savedApiBase;
-      }
       if (savedAuthToken != null && savedAuthToken.isNotEmpty) {
         _authToken = savedAuthToken;
       } else if (_firebaseReady && FirebaseAuth.instance.currentUser != null) {
-        _authToken = await FirebaseAuth.instance.currentUser!.getIdToken() ?? '';
+        _authToken =
+            await FirebaseAuth.instance.currentUser!.getIdToken() ?? '';
       }
       if (sessionRaw == null || sessionRaw.isEmpty) {
         return;
@@ -108,9 +110,9 @@ class _AuthGateState extends State<AuthGate> {
     }
   }
 
-  Future<void> _persistSession(SessionUser user, String apiBase, String authToken) async {
+  Future<void> _persistSession(
+      SessionUser user, String apiBase, String authToken) async {
     await _storage.write(key: _sessionKey, value: jsonEncode(user.toJson()));
-    await _storage.write(key: _apiBaseKey, value: apiBase);
     await _storage.write(key: _authTokenKey, value: authToken);
   }
 
@@ -129,18 +131,37 @@ class _AuthGateState extends State<AuthGate> {
     try {
       final client = BackendClient(_apiBase);
       if (_firebaseReady && FirebaseAuth.instance.currentUser != null) {
-        _authToken = await FirebaseAuth.instance.currentUser!.getIdToken(true) ?? '';
+        _authToken =
+            await FirebaseAuth.instance.currentUser!.getIdToken(true) ?? '';
       } else if (_authToken.isEmpty) {
         _authToken = 'dev:${user.phone}:parent';
       }
       final overview = await client.getParentOverview(_authToken);
+      List<ParentAnnouncement> announcements = const [];
+      List<ParentEvent> events = const [];
+      ParentAppConfig config =
+          const ParentAppConfig(featureFlags: {}, dashboardWidgets: []);
+      if (overview.status == 'approved' && overview.student != null) {
+        final results = await Future.wait([
+          client.fetchAnnouncements(_authToken),
+          client.fetchEvents(_authToken),
+          client.fetchAppConfig(_authToken),
+        ]);
+        announcements = results[0] as List<ParentAnnouncement>;
+        events = results[1] as List<ParentEvent>;
+        config = results[2] as ParentAppConfig;
+      }
       if (!mounted) return;
       setState(() {
         _linkedStudent = overview.student;
         _linkedScores = overview.scores;
+        _announcements = announcements;
+        _events = events;
+        _appConfig = config;
         _needsChildLinking = overview.status == 'not_linked';
         _isPendingApproval = overview.status == 'pending';
-        _isAuthenticated = overview.status == 'approved' && overview.student != null;
+        _isAuthenticated =
+            overview.status == 'approved' && overview.student != null;
       });
     } catch (_) {
       if (!mounted) return;
@@ -148,6 +169,10 @@ class _AuthGateState extends State<AuthGate> {
         _needsChildLinking = true;
         _isPendingApproval = false;
         _isAuthenticated = false;
+        _announcements = const [];
+        _events = const [];
+        _appConfig =
+            const ParentAppConfig(featureFlags: {}, dashboardWidgets: []);
       });
     } finally {
       if (mounted) {
@@ -204,6 +229,9 @@ class _AuthGateState extends State<AuthGate> {
         sessionUser: _sessionUser,
         student: _linkedStudent,
         scores: _linkedScores,
+        announcements: _announcements,
+        events: _events,
+        appConfig: _appConfig,
         onLogout: () async {
           await _clearSession();
           if (!mounted) return;
@@ -212,23 +240,25 @@ class _AuthGateState extends State<AuthGate> {
             _sessionUser = null;
             _linkedStudent = null;
             _linkedScores = const [];
+            _announcements = const [];
+            _events = const [];
+            _appConfig =
+                const ParentAppConfig(featureFlags: {}, dashboardWidgets: []);
           });
         },
       );
     }
     return AuthScreen(
-      initialApiBase: _apiBase,
       firebaseEnabled: _firebaseReady,
-      onAuthSuccess: (sessionUser, apiBase, authToken) {
+      onAuthSuccess: (sessionUser, authToken) {
         setState(() {
-          _apiBase = apiBase;
           _authToken = authToken;
           _sessionUser = sessionUser;
           _needsChildLinking = false;
           _isAuthenticated = false;
           _isPendingApproval = false;
         });
-        _persistSession(sessionUser, apiBase, authToken);
+        _persistSession(sessionUser, _apiBase, authToken);
         _refreshParentOverview();
       },
     );
@@ -323,6 +353,137 @@ class ParentScore {
   }
 }
 
+class ParentAnnouncement {
+  final String id;
+  final String title;
+  final String content;
+  final String category;
+  final String priority;
+  final bool published;
+  final DateTime? createdAt;
+
+  const ParentAnnouncement({
+    required this.id,
+    required this.title,
+    required this.content,
+    required this.category,
+    required this.priority,
+    required this.published,
+    required this.createdAt,
+  });
+
+  factory ParentAnnouncement.fromJson(Map<String, dynamic> json) {
+    return ParentAnnouncement(
+      id: (json['id'] ?? '').toString(),
+      title: (json['title'] ?? '').toString(),
+      content: (json['content'] ?? '').toString(),
+      category: (json['category'] ?? '').toString(),
+      priority: (json['priority'] ?? '').toString(),
+      published: (json['published'] ?? false) == true,
+      createdAt: DateTime.tryParse((json['created_at'] ?? '').toString()),
+    );
+  }
+}
+
+class ParentEvent {
+  final String id;
+  final String title;
+  final String description;
+  final String category;
+  final String location;
+  final String audience;
+  final String startTime;
+  final String endTime;
+  final DateTime? eventDate;
+  final bool published;
+
+  const ParentEvent({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.category,
+    required this.location,
+    required this.audience,
+    required this.startTime,
+    required this.endTime,
+    required this.eventDate,
+    required this.published,
+  });
+
+  factory ParentEvent.fromJson(Map<String, dynamic> json) {
+    return ParentEvent(
+      id: (json['id'] ?? '').toString(),
+      title: (json['title'] ?? '').toString(),
+      description: (json['description'] ?? '').toString(),
+      category: (json['category'] ?? '').toString(),
+      location: (json['location'] ?? '').toString(),
+      audience: (json['audience'] ?? '').toString(),
+      startTime: (json['start_time'] ?? '').toString(),
+      endTime: (json['end_time'] ?? '').toString(),
+      eventDate: DateTime.tryParse((json['event_date'] ?? '').toString()),
+      published: (json['published'] ?? false) == true,
+    );
+  }
+}
+
+class DashboardMetric {
+  final String key;
+  final String label;
+  final String value;
+  final String hint;
+  final String icon;
+
+  const DashboardMetric({
+    required this.key,
+    required this.label,
+    required this.value,
+    required this.hint,
+    required this.icon,
+  });
+
+  factory DashboardMetric.fromJson(Map<String, dynamic> json) {
+    return DashboardMetric(
+      key: (json['key'] ?? '').toString(),
+      label: (json['label'] ?? '').toString(),
+      value: (json['value'] ?? '').toString(),
+      hint: (json['hint'] ?? '').toString(),
+      icon: (json['icon'] ?? '').toString(),
+    );
+  }
+}
+
+class ParentAppConfig {
+  final Map<String, bool> featureFlags;
+  final List<DashboardMetric> dashboardWidgets;
+
+  const ParentAppConfig({
+    required this.featureFlags,
+    required this.dashboardWidgets,
+  });
+
+  bool isEnabled(String key, {bool fallback = true}) {
+    return featureFlags.containsKey(key) ? featureFlags[key] == true : fallback;
+  }
+
+  factory ParentAppConfig.fromJson(Map<String, dynamic> json) {
+    final rawFlags = json['feature_flags'];
+    final rawWidgets = json['dashboard_widgets'];
+    final flags = <String, bool>{};
+    if (rawFlags is Map<String, dynamic>) {
+      rawFlags.forEach((key, value) => flags[key] = value == true);
+    }
+    return ParentAppConfig(
+      featureFlags: flags,
+      dashboardWidgets: rawWidgets is List
+          ? rawWidgets
+              .whereType<Map<String, dynamic>>()
+              .map(DashboardMetric.fromJson)
+              .toList()
+          : const [],
+    );
+  }
+}
+
 class ParentOverview {
   final String status;
   final ParentStudent? student;
@@ -347,7 +508,8 @@ class BackendClient {
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Login failed (${response.statusCode}): ${_extractError(response.body)}');
+      throw Exception(
+          'Login failed (${response.statusCode}): ${_extractError(response.body)}');
     }
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -375,7 +537,8 @@ class BackendClient {
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Signup request failed (${response.statusCode}): ${_extractError(response.body)}');
+      throw Exception(
+          'Signup request failed (${response.statusCode}): ${_extractError(response.body)}');
     }
   }
 
@@ -385,7 +548,8 @@ class BackendClient {
       headers: {'Authorization': 'Bearer $token'},
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Districts fetch failed (${response.statusCode}): ${_extractError(response.body)}');
+      throw Exception(
+          'Districts fetch failed (${response.statusCode}): ${_extractError(response.body)}');
     }
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     final raw = body['districts'];
@@ -402,7 +566,8 @@ class BackendClient {
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Overview fetch failed (${response.statusCode}): ${_extractError(response.body)}');
+      throw Exception(
+          'Overview fetch failed (${response.statusCode}): ${_extractError(response.body)}');
     }
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -412,7 +577,9 @@ class BackendClient {
 
     return ParentOverview(
       status: status,
-      student: studentJson is Map<String, dynamic> ? ParentStudent.fromJson(studentJson) : null,
+      student: studentJson is Map<String, dynamic>
+          ? ParentStudent.fromJson(studentJson)
+          : null,
       scores: scoresJson is List
           ? scoresJson
               .whereType<Map<String, dynamic>>()
@@ -420,6 +587,56 @@ class BackendClient {
               .toList()
           : const [],
     );
+  }
+
+  Future<List<ParentAnnouncement>> fetchAnnouncements(String token) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/v1/announcements'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+          'Announcements fetch failed (${response.statusCode}): ${_extractError(response.body)}');
+    }
+    final body = jsonDecode(response.body);
+    if (body is! List) return const [];
+    return body
+        .whereType<Map<String, dynamic>>()
+        .map(ParentAnnouncement.fromJson)
+        .toList();
+  }
+
+  Future<List<ParentEvent>> fetchEvents(String token) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/v1/events'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+          'Events fetch failed (${response.statusCode}): ${_extractError(response.body)}');
+    }
+    final body = jsonDecode(response.body);
+    if (body is! List) return const [];
+    return body
+        .whereType<Map<String, dynamic>>()
+        .map(ParentEvent.fromJson)
+        .toList();
+  }
+
+  Future<ParentAppConfig> fetchAppConfig(String token) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/v1/app-config'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+          'App config fetch failed (${response.statusCode}): ${_extractError(response.body)}');
+    }
+    final body = jsonDecode(response.body);
+    if (body is! Map<String, dynamic>) {
+      return const ParentAppConfig(featureFlags: {}, dashboardWidgets: []);
+    }
+    return ParentAppConfig.fromJson(body);
   }
 
   String _extractError(String body) {
@@ -441,13 +658,11 @@ class BackendClient {
 enum AuthMode { login, signup }
 
 class AuthScreen extends StatefulWidget {
-  final String initialApiBase;
   final bool firebaseEnabled;
-  final void Function(SessionUser user, String apiBase, String authToken) onAuthSuccess;
+  final void Function(SessionUser user, String authToken) onAuthSuccess;
 
   const AuthScreen({
     super.key,
-    required this.initialApiBase,
     required this.firebaseEnabled,
     required this.onAuthSuccess,
   });
@@ -461,7 +676,7 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _otpSent = false;
   bool _loading = false;
   String _status = '';
-  late String _apiBase;
+  final String _apiBase = kApiBaseUrl;
   String _verificationId = '';
   int? _resendToken;
   int _resendSeconds = 0;
@@ -469,12 +684,6 @@ class _AuthScreenState extends State<AuthScreen> {
 
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _otpController = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _apiBase = widget.initialApiBase;
-  }
 
   @override
   void dispose() {
@@ -578,7 +787,8 @@ class _AuthScreenState extends State<AuthScreen> {
           verificationId: _verificationId,
           smsCode: otp,
         );
-        final userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
+        final userCredential =
+            await FirebaseAuth.instance.signInWithCredential(credential);
         final firebaseUser = userCredential.user;
         if (firebaseUser == null) {
           throw Exception('Firebase user is null');
@@ -593,7 +803,7 @@ class _AuthScreenState extends State<AuthScreen> {
       }
 
       final sessionUser = await client.loginWithToken(authToken);
-      widget.onAuthSuccess(sessionUser, _apiBase.trim(), authToken);
+      widget.onAuthSuccess(sessionUser, authToken);
     } catch (err) {
       setState(() {
         _loading = false;
@@ -637,18 +847,31 @@ class _AuthScreenState extends State<AuthScreen> {
                   children: [
                     const Text(
                       'JNV Parent Portal',
-                      style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+                      style:
+                          TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      isSignup ? 'Create your parent account' : 'Login with phone and OTP',
+                      isSignup
+                          ? 'Create your parent account'
+                          : 'Login with phone and OTP',
                       style: const TextStyle(color: Color(0xFF64748B)),
                     ),
                     const SizedBox(height: 18),
-                    TextFormField(
-                      initialValue: _apiBase,
-                      decoration: const InputDecoration(labelText: 'API Base URL'),
-                      onChanged: (value) => _apiBase = value,
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: const Text(
+                        'Server: https://jnv-web.onrender.com',
+                        style:
+                            TextStyle(fontSize: 12, color: Color(0xFF475569)),
+                      ),
                     ),
                     const SizedBox(height: 10),
                     Row(
@@ -684,7 +907,8 @@ class _AuthScreenState extends State<AuthScreen> {
                     TextField(
                       controller: _phoneController,
                       keyboardType: TextInputType.phone,
-                      decoration: const InputDecoration(labelText: 'Phone Number'),
+                      decoration:
+                          const InputDecoration(labelText: 'Phone Number'),
                     ),
                     const SizedBox(height: 10),
                     if (_otpSent)
@@ -698,7 +922,9 @@ class _AuthScreenState extends State<AuthScreen> {
                       Align(
                         alignment: Alignment.centerRight,
                         child: TextButton(
-                          onPressed: (_loading || _resendSeconds > 0) ? null : _sendOtp,
+                          onPressed: (_loading || _resendSeconds > 0)
+                              ? null
+                              : _sendOtp,
                           child: Text(
                             _resendSeconds > 0
                                 ? 'Resend in ${_resendSeconds}s'
@@ -711,7 +937,9 @@ class _AuthScreenState extends State<AuthScreen> {
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton(
-                        onPressed: _loading ? null : (_otpSent ? _verifyOtp : _sendOtp),
+                        onPressed: _loading
+                            ? null
+                            : (_otpSent ? _verifyOtp : _sendOtp),
                         child: Text(_loading
                             ? 'Please wait...'
                             : (_otpSent ? 'Verify OTP' : 'Send OTP')),
@@ -721,7 +949,8 @@ class _AuthScreenState extends State<AuthScreen> {
                       const SizedBox(height: 12),
                       Text(
                         _status,
-                        style: const TextStyle(fontSize: 13, color: Color(0xFF475569)),
+                        style: const TextStyle(
+                            fontSize: 13, color: Color(0xFF475569)),
                       ),
                     ],
                   ],
@@ -815,7 +1044,8 @@ class _LinkChildScreenState extends State<LinkChildScreen> {
     });
     try {
       final client = BackendClient(widget.apiBase);
-      await client.requestParentLinkByClassRoll(widget.authToken, district, classLabel, roll);
+      await client.requestParentLinkByClassRoll(
+          widget.authToken, district, classLabel, roll);
       widget.onRequested();
     } catch (err) {
       setState(() {
@@ -851,7 +1081,8 @@ class _LinkChildScreenState extends State<LinkChildScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text('Link Your Child',
-                        style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+                        style: TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.w800)),
                     const SizedBox(height: 6),
                     const Text(
                       'Enter district, class and roll number to request student access.',
@@ -863,32 +1094,37 @@ class _LinkChildScreenState extends State<LinkChildScreen> {
                     else
                       DropdownButtonFormField<String>(
                         value: _selectedDistrict,
-                        decoration: const InputDecoration(labelText: 'District'),
+                        decoration:
+                            const InputDecoration(labelText: 'District'),
                         items: _districts
                             .map((district) => DropdownMenuItem<String>(
                                   value: district,
                                   child: Text(district),
                                 ))
                             .toList(),
-                        onChanged: (value) => setState(() => _selectedDistrict = value),
+                        onChanged: (value) =>
+                            setState(() => _selectedDistrict = value),
                       ),
                     const SizedBox(height: 10),
                     TextField(
                       controller: _classController,
-                      decoration: const InputDecoration(labelText: 'Class (example: Class 10)'),
+                      decoration: const InputDecoration(
+                          labelText: 'Class (example: Class 10)'),
                     ),
                     const SizedBox(height: 10),
                     TextField(
                       controller: _rollController,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Roll Number'),
+                      decoration:
+                          const InputDecoration(labelText: 'Roll Number'),
                     ),
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton(
                         onPressed: _loading ? null : _submit,
-                        child: Text(_loading ? 'Submitting...' : 'Submit request'),
+                        child:
+                            Text(_loading ? 'Submitting...' : 'Submit request'),
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -902,7 +1138,8 @@ class _LinkChildScreenState extends State<LinkChildScreen> {
                     ),
                     if (_status.isNotEmpty) ...[
                       const SizedBox(height: 10),
-                      Text(_status, style: const TextStyle(color: Color(0xFF475569))),
+                      Text(_status,
+                          style: const TextStyle(color: Color(0xFF475569))),
                     ],
                   ],
                 ),
@@ -948,7 +1185,8 @@ class PendingApprovalScreen extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.hourglass_top_rounded, size: 48, color: Color(0xFF4F46E5)),
+                const Icon(Icons.hourglass_top_rounded,
+                    size: 48, color: Color(0xFF4F46E5)),
                 const SizedBox(height: 12),
                 const Text(
                   'Request Submitted',
@@ -983,6 +1221,9 @@ class ParentShell extends StatefulWidget {
   final SessionUser? sessionUser;
   final ParentStudent? student;
   final List<ParentScore> scores;
+  final List<ParentAnnouncement> announcements;
+  final List<ParentEvent> events;
+  final ParentAppConfig appConfig;
   final VoidCallback onLogout;
 
   const ParentShell({
@@ -991,6 +1232,9 @@ class ParentShell extends StatefulWidget {
     required this.sessionUser,
     required this.student,
     required this.scores,
+    required this.announcements,
+    required this.events,
+    required this.appConfig,
   });
 
   @override
@@ -1002,11 +1246,21 @@ class _ParentShellState extends State<ParentShell> {
 
   @override
   Widget build(BuildContext context) {
-    final screens = [
-      DashboardScreen(sessionUser: widget.sessionUser, student: widget.student, scores: widget.scores),
-      const AcademicScreen(),
-      const EventsScreen(),
-      const NewsScreen(),
+    final showAcademic = widget.appConfig.isEnabled('show_academic_tab');
+    final screens = <Widget>[
+      DashboardScreen(
+        sessionUser: widget.sessionUser,
+        student: widget.student,
+        scores: widget.scores,
+        events: widget.events,
+        announcements: widget.announcements,
+        appConfig: widget.appConfig,
+      ),
+      if (showAcademic) const AcademicScreen(),
+      if (widget.appConfig.isEnabled('show_events', fallback: true))
+        EventsScreen(events: widget.events),
+      if (widget.appConfig.isEnabled('show_announcements', fallback: true))
+        NewsScreen(announcements: widget.announcements),
       ProfileScreen(
         onLogout: widget.onLogout,
         sessionUser: widget.sessionUser,
@@ -1014,19 +1268,29 @@ class _ParentShellState extends State<ParentShell> {
         scores: widget.scores,
       ),
     ];
+    final destinations = <NavigationDestination>[
+      const NavigationDestination(
+          icon: Icon(Icons.home_outlined), label: 'Home'),
+      if (showAcademic)
+        const NavigationDestination(
+            icon: Icon(Icons.school_outlined), label: 'Academic'),
+      if (widget.appConfig.isEnabled('show_events', fallback: true))
+        const NavigationDestination(
+            icon: Icon(Icons.event_outlined), label: 'Events'),
+      if (widget.appConfig.isEnabled('show_announcements', fallback: true))
+        const NavigationDestination(
+            icon: Icon(Icons.notifications_outlined), label: 'News'),
+      const NavigationDestination(
+          icon: Icon(Icons.person_outline), label: 'Profile'),
+    ];
+    final selectedIndex = _index.clamp(0, screens.length - 1);
 
     return Scaffold(
-      body: screens[_index],
+      body: screens[selectedIndex],
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
+        selectedIndex: selectedIndex,
         onDestinationSelected: (value) => setState(() => _index = value),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Home'),
-          NavigationDestination(icon: Icon(Icons.school_outlined), label: 'Academic'),
-          NavigationDestination(icon: Icon(Icons.event_outlined), label: 'Events'),
-          NavigationDestination(icon: Icon(Icons.notifications_outlined), label: 'News'),
-          NavigationDestination(icon: Icon(Icons.person_outline), label: 'Profile'),
-        ],
+        destinations: destinations,
       ),
     );
   }
@@ -1068,11 +1332,13 @@ class HeaderBar extends StatelessWidget {
                 children: [
                   const Text(
                     'JNV Parent Portal',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+                    style: TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w700),
                   ),
                   Text(
                     subtitle,
-                    style: const TextStyle(color: Color(0xFFDCE3FF), fontSize: 12),
+                    style:
+                        const TextStyle(color: Color(0xFFDCE3FF), fontSize: 12),
                   ),
                 ],
               ),
@@ -1093,12 +1359,18 @@ class DashboardScreen extends StatelessWidget {
   final SessionUser? sessionUser;
   final ParentStudent? student;
   final List<ParentScore> scores;
+  final List<ParentEvent> events;
+  final List<ParentAnnouncement> announcements;
+  final ParentAppConfig appConfig;
 
   const DashboardScreen({
     super.key,
     required this.sessionUser,
     required this.student,
     required this.scores,
+    required this.events,
+    required this.announcements,
+    required this.appConfig,
   });
 
   @override
@@ -1112,7 +1384,11 @@ class DashboardScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                StudentSummaryCard(sessionUser: sessionUser, student: student),
+                StudentSummaryCard(
+                  sessionUser: sessionUser,
+                  student: student,
+                  dashboardWidgets: appConfig.dashboardWidgets,
+                ),
                 const SizedBox(height: 16),
                 const SectionHeader(
                   icon: Icons.menu_book_rounded,
@@ -1123,23 +1399,28 @@ class DashboardScreen extends StatelessWidget {
                 const SizedBox(height: 12),
                 RecentScoresCard(scores: scores),
                 const SizedBox(height: 20),
-                const SectionHeader(
-                  icon: Icons.event_available_rounded,
-                  iconColor: Color(0xFF7C3AED),
-                  title: 'Upcoming Events',
-                  subtitle: 'Next 3 events',
-                ),
-                const SizedBox(height: 12),
-                const UpcomingEventsCard(),
-                const SizedBox(height: 20),
-                const SectionHeader(
-                  icon: Icons.notifications_active_rounded,
-                  iconColor: Color(0xFFF97316),
-                  title: 'Announcements',
-                  subtitle: 'Recent updates',
-                ),
-                const SizedBox(height: 12),
-                const AnnouncementsCard(),
+                if (appConfig.isEnabled('show_events', fallback: true)) ...[
+                  const SectionHeader(
+                    icon: Icons.event_available_rounded,
+                    iconColor: Color(0xFF7C3AED),
+                    title: 'Upcoming Events',
+                    subtitle: 'Next 3 events',
+                  ),
+                  const SizedBox(height: 12),
+                  UpcomingEventsCard(events: events),
+                  const SizedBox(height: 20),
+                ],
+                if (appConfig.isEnabled('show_announcements',
+                    fallback: true)) ...[
+                  const SectionHeader(
+                    icon: Icons.notifications_active_rounded,
+                    iconColor: Color(0xFFF97316),
+                    title: 'Announcements',
+                    subtitle: 'Recent updates',
+                  ),
+                  const SizedBox(height: 12),
+                  AnnouncementsCard(announcements: announcements),
+                ],
               ],
             ),
           ),
@@ -1152,8 +1433,13 @@ class DashboardScreen extends StatelessWidget {
 class StudentSummaryCard extends StatelessWidget {
   final SessionUser? sessionUser;
   final ParentStudent? student;
+  final List<DashboardMetric> dashboardWidgets;
 
-  const StudentSummaryCard({super.key, required this.sessionUser, required this.student});
+  const StudentSummaryCard(
+      {super.key,
+      required this.sessionUser,
+      required this.student,
+      required this.dashboardWidgets});
 
   @override
   Widget build(BuildContext context) {
@@ -1167,7 +1453,8 @@ class StudentSummaryCard extends StatelessWidget {
         ),
         borderRadius: BorderRadius.circular(24),
         boxShadow: const [
-          BoxShadow(color: Color(0x33000000), blurRadius: 18, offset: Offset(0, 8)),
+          BoxShadow(
+              color: Color(0x33000000), blurRadius: 18, offset: Offset(0, 8)),
         ],
       ),
       child: Column(
@@ -1200,7 +1487,10 @@ class StudentSummaryCard extends StatelessWidget {
                           : (sessionUser?.name.isNotEmpty ?? false)
                               ? sessionUser!.name
                               : 'Parent User',
-                      style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700),
                     ),
                     SizedBox(height: 4),
                     Text(
@@ -1208,7 +1498,7 @@ class StudentSummaryCard extends StatelessWidget {
                           ? '${student!.classLabel} • Roll ${student!.rollNumber}'
                           : (sessionUser?.phone.isNotEmpty ?? false)
                               ? sessionUser!.phone
-                          : 'Class 10-A • JNV2024-1045',
+                              : 'Class 10-A • JNV2024-1045',
                       style: TextStyle(color: Color(0xFFE5E7FF), fontSize: 12),
                     ),
                   ],
@@ -1218,19 +1508,40 @@ class StudentSummaryCard extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           Row(
-            children: const [
-              Expanded(
-                child: StatCard(title: 'GPA', value: '9.2'),
-              ),
-              SizedBox(width: 10),
-              Expanded(
-                child: StatCard(title: 'Attend', value: '94.5%'),
-              ),
-              SizedBox(width: 10),
-              Expanded(
-                child: StatCard(title: 'Rank', value: '#3'),
-              ),
-            ],
+            children: (dashboardWidgets.isEmpty
+                    ? const [
+                        DashboardMetric(
+                            key: 'gpa',
+                            label: 'GPA',
+                            value: '9.2',
+                            hint: 'This term',
+                            icon: 'school'),
+                        DashboardMetric(
+                            key: 'attendance',
+                            label: 'Attend',
+                            value: '94.5%',
+                            hint: 'Monthly avg',
+                            icon: 'check_circle'),
+                        DashboardMetric(
+                            key: 'rank',
+                            label: 'Rank',
+                            value: '#3',
+                            hint: 'Class standing',
+                            icon: 'emoji_events'),
+                      ]
+                    : dashboardWidgets.take(3).toList())
+                .asMap()
+                .entries
+                .map((entry) {
+              final idx = entry.key;
+              final item = entry.value;
+              return Expanded(
+                child: Padding(
+                  padding: EdgeInsets.only(right: idx < 2 ? 10 : 0),
+                  child: StatCard(title: item.label, value: item.value),
+                ),
+              );
+            }).toList(),
           ),
         ],
       ),
@@ -1255,9 +1566,14 @@ class StatCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Text(title, style: const TextStyle(color: Color(0xFFE5E7FF), fontSize: 11)),
+          Text(title,
+              style: const TextStyle(color: Color(0xFFE5E7FF), fontSize: 11)),
           const SizedBox(height: 6),
-          Text(value, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(value,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold)),
         ],
       ),
     );
@@ -1298,13 +1614,20 @@ class SectionHeader extends StatelessWidget {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-                Text(subtitle, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                Text(title,
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+                Text(subtitle,
+                    style: const TextStyle(
+                        fontSize: 11, color: Color(0xFF64748B))),
               ],
             ),
           ],
         ),
-        const Text('View All', style: TextStyle(color: Color(0xFF4F46E5), fontWeight: FontWeight.w600, fontSize: 12)),
+        const Text('View All',
+            style: TextStyle(
+                color: Color(0xFF4F46E5),
+                fontWeight: FontWeight.w600,
+                fontSize: 12)),
       ],
     );
   }
@@ -1324,7 +1647,10 @@ class RecentScoresCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))],
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))
+        ],
       ),
       child: Column(
         children: recentScores.isEmpty
@@ -1338,62 +1664,75 @@ class RecentScoresCard extends StatelessWidget {
                 ),
               ]
             : recentScores.map((item) {
-          final score = item.score;
-          final maxScore = item.maxScore <= 0 ? 100 : item.maxScore;
-          final dateText = item.createdAt != null
-              ? '${item.createdAt!.day.toString().padLeft(2, '0')} '
-                  '${_monthName(item.createdAt!.month)} ${item.createdAt!.year}'
-              : 'Recent';
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                final score = item.score;
+                final maxScore = item.maxScore <= 0 ? 100 : item.maxScore;
+                final dateText = item.createdAt != null
+                    ? '${item.createdAt!.day.toString().padLeft(2, '0')} '
+                        '${_monthName(item.createdAt!.month)} ${item.createdAt!.year}'
+                    : 'Recent';
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Column(
+                    children: [
+                      Row(
                         children: [
-                          Text(item.subject, style: const TextStyle(fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 4),
-                          Text(dateText, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(item.subject,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w600)),
+                                const SizedBox(height: 4),
+                                Text(dateText,
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Color(0xFF64748B))),
+                              ],
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: (item.grade == 'A+'
+                                  ? const Color(0xFFDCFCE7)
+                                  : const Color(0xFFDBEAFE)),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              item.grade.isEmpty ? '-' : item.grade,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: (item.grade == 'A+'
+                                    ? const Color(0xFF15803D)
+                                    : const Color(0xFF1D4ED8)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                              '${score.toStringAsFixed(0)}/${maxScore.toStringAsFixed(0)}',
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w700)),
                         ],
                       ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: (item.grade == 'A+' ? const Color(0xFFDCFCE7) : const Color(0xFFDBEAFE)),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        item.grade.isEmpty ? '-' : item.grade,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: (item.grade == 'A+' ? const Color(0xFF15803D) : const Color(0xFF1D4ED8)),
+                      const SizedBox(height: 8),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: score / maxScore,
+                          minHeight: 6,
+                          backgroundColor: const Color(0xFFE5E7EB),
+                          valueColor:
+                              const AlwaysStoppedAnimation(Color(0xFF6366F1)),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Text('${score.toStringAsFixed(0)}/${maxScore.toStringAsFixed(0)}',
-                        style: const TextStyle(fontWeight: FontWeight.w700)),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(
-                    value: score / maxScore,
-                    minHeight: 6,
-                    backgroundColor: const Color(0xFFE5E7EB),
-                    valueColor: const AlwaysStoppedAnimation(Color(0xFF6366F1)),
+                    ],
                   ),
-                ),
-              ],
-            ),
-          );
-        }).toList(),
+                );
+              }).toList(),
       ),
     );
   }
@@ -1418,26 +1757,72 @@ String _monthName(int month) {
 }
 
 class UpcomingEventsCard extends StatelessWidget {
-  const UpcomingEventsCard({super.key});
+  final List<ParentEvent> events;
+
+  const UpcomingEventsCard({super.key, required this.events});
 
   @override
   Widget build(BuildContext context) {
-    final events = [
-      {'date': 'Jan 25', 'title': 'Annual Sports Day', 'time': '9:00 AM', 'type': 'Sports'},
-      {'date': 'Jan 28', 'title': 'Parent-Teacher Meeting', 'time': '10:00 AM', 'type': 'Meeting'},
-      {'date': 'Feb 5', 'title': 'Science Exhibition', 'time': '11:00 AM', 'type': 'Academic'},
-    ];
+    final displayEvents = events.isEmpty
+        ? const [
+            ParentEvent(
+              id: 'local-1',
+              title: 'Annual Sports Day',
+              description: '',
+              category: 'Sports',
+              location: '',
+              audience: '',
+              startTime: '9:00 AM',
+              endTime: '',
+              eventDate: null,
+              published: true,
+            ),
+            ParentEvent(
+              id: 'local-2',
+              title: 'Parent-Teacher Meeting',
+              description: '',
+              category: 'Meeting',
+              location: '',
+              audience: '',
+              startTime: '10:00 AM',
+              endTime: '',
+              eventDate: null,
+              published: true,
+            ),
+            ParentEvent(
+              id: 'local-3',
+              title: 'Science Exhibition',
+              description: '',
+              category: 'Academic',
+              location: '',
+              audience: '',
+              startTime: '11:00 AM',
+              endTime: '',
+              eventDate: null,
+              published: true,
+            ),
+          ]
+        : events.take(3).toList();
 
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))],
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))
+        ],
       ),
       child: Column(
-        children: events.map((event) {
-          final dateParts = (event['date'] as String).split(' ');
+        children: displayEvents.map((event) {
+          final date = event.eventDate;
+          final dateParts = date == null
+              ? ['--', '--']
+              : [_monthName(date.month), date.day.toString()];
+          final timeLabel = event.endTime.isNotEmpty
+              ? '${event.startTime} - ${event.endTime}'
+              : event.startTime;
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Row(
@@ -1453,9 +1838,14 @@ class UpcomingEventsCard extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Text(dateParts[0],
-                          style: const TextStyle(color: Color(0xFF4F46E5), fontWeight: FontWeight.w700, fontSize: 12)),
+                          style: const TextStyle(
+                              color: Color(0xFF4F46E5),
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12)),
                       Text(dateParts[1],
-                          style: const TextStyle(color: Color(0xFF1E1B4B), fontWeight: FontWeight.w800)),
+                          style: const TextStyle(
+                              color: Color(0xFF1E1B4B),
+                              fontWeight: FontWeight.w800)),
                     ],
                   ),
                 ),
@@ -1464,19 +1854,26 @@ class UpcomingEventsCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(event['title']!, style: const TextStyle(fontWeight: FontWeight.w600)),
+                      Text(event.title,
+                          style: const TextStyle(fontWeight: FontWeight.w600)),
                       const SizedBox(height: 4),
-                      Text(event['time']!, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                      Text(timeLabel,
+                          style: const TextStyle(
+                              fontSize: 11, color: Color(0xFF64748B))),
                       const SizedBox(height: 6),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
                           color: const Color(0xFFEDE9FE),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
-                          event['type']!,
-                          style: const TextStyle(color: Color(0xFF7C3AED), fontSize: 11, fontWeight: FontWeight.w700),
+                          event.category.isEmpty ? 'General' : event.category,
+                          style: const TextStyle(
+                              color: Color(0xFF7C3AED),
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700),
                         ),
                       ),
                     ],
@@ -1492,24 +1889,47 @@ class UpcomingEventsCard extends StatelessWidget {
 }
 
 class AnnouncementsCard extends StatelessWidget {
-  const AnnouncementsCard({super.key});
+  final List<ParentAnnouncement> announcements;
+
+  const AnnouncementsCard({super.key, required this.announcements});
 
   @override
   Widget build(BuildContext context) {
-    final announcements = [
-      {'title': 'Winter Break Schedule', 'age': '2 days ago', 'tag': 'Important', 'color': Color(0xFFFEE2E2)},
-      {'title': 'New Library Books Available', 'age': '5 days ago', 'tag': 'Notice', 'color': Color(0xFFFFF7ED)},
-    ];
+    final displayAnnouncements = announcements.isEmpty
+        ? const [
+            ParentAnnouncement(
+              id: 'local-1',
+              title: 'Winter Break Schedule',
+              content: '',
+              category: 'Important',
+              priority: 'high',
+              published: true,
+              createdAt: null,
+            ),
+            ParentAnnouncement(
+              id: 'local-2',
+              title: 'New Library Books Available',
+              content: '',
+              category: 'Notice',
+              priority: 'normal',
+              published: true,
+              createdAt: null,
+            ),
+          ]
+        : announcements.take(2).toList();
 
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))],
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))
+        ],
       ),
       child: Column(
-        children: announcements.map((item) {
+        children: displayAnnouncements.map((item) {
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Container(
@@ -1522,14 +1942,20 @@ class AnnouncementsCard extends StatelessWidget {
               child: Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color: item['color'] as Color,
+                      color: item.priority.toLowerCase() == 'high'
+                          ? const Color(0xFFFEE2E2)
+                          : const Color(0xFFFFF7ED),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
-                      item['tag'] as String,
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFFB45309)),
+                      item.category.isEmpty ? 'Notice' : item.category,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFFB45309)),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -1537,9 +1963,16 @@ class AnnouncementsCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(item['title'] as String, style: const TextStyle(fontWeight: FontWeight.w600)),
+                        Text(item.title,
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w600)),
                         const SizedBox(height: 4),
-                        Text(item['age'] as String, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                        Text(
+                            item.createdAt != null
+                                ? '${_monthName(item.createdAt!.month)} ${item.createdAt!.day}, ${item.createdAt!.year}'
+                                : 'Recently',
+                            style: const TextStyle(
+                                fontSize: 11, color: Color(0xFF64748B))),
                       ],
                     ),
                   ),
@@ -1590,27 +2023,37 @@ class AcademicScreen extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: const [
                       Text('Academic Performance',
-                          style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700)),
                       SizedBox(height: 12),
                       Row(
                         children: [
                           Expanded(child: StatCard(title: 'GPA', value: '9.2')),
                           SizedBox(width: 10),
-                          Expanded(child: StatCard(title: 'Avg %', value: '89.5')),
+                          Expanded(
+                              child: StatCard(title: 'Avg %', value: '89.5')),
                         ],
                       ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 16),
-                const Text('Term Reports', style: TextStyle(fontWeight: FontWeight.w700)),
+                const Text('Term Reports',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
                 const SizedBox(height: 12),
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(20),
-                    boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))],
+                    boxShadow: const [
+                      BoxShadow(
+                          color: Color(0x12000000),
+                          blurRadius: 16,
+                          offset: Offset(0, 8))
+                    ],
                   ),
                   child: Column(
                     children: [
@@ -1620,16 +2063,25 @@ class AcademicScreen extends StatelessWidget {
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text('Term 1 - 2025-26', style: TextStyle(fontWeight: FontWeight.w600)),
+                              Text('Term 1 - 2025-26',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.w600)),
                               SizedBox(height: 4),
-                              Text('Performance Report', style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                              Text('Performance Report',
+                                  style: TextStyle(
+                                      fontSize: 11, color: Color(0xFF64748B))),
                             ],
                           ),
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
-                              Text('GPA', style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
-                              Text('9.2', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF4F46E5))),
+                              Text('GPA',
+                                  style: TextStyle(
+                                      fontSize: 11, color: Color(0xFF64748B))),
+                              Text('9.2',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF4F46E5))),
                             ],
                           ),
                         ],
@@ -1650,25 +2102,35 @@ class AcademicScreen extends StatelessWidget {
                                       color: const Color(0xFFE0E7FF),
                                       borderRadius: BorderRadius.circular(12),
                                     ),
-                                    child: const Icon(Icons.description_outlined, size: 18, color: Color(0xFF4F46E5)),
+                                    child: const Icon(
+                                        Icons.description_outlined,
+                                        size: 18,
+                                        color: Color(0xFF4F46E5)),
                                   ),
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Text(subject['name'] as String,
-                                            style: const TextStyle(fontWeight: FontWeight.w600)),
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.w600)),
                                         const SizedBox(height: 2),
                                         const Text('100 marks',
-                                            style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                                            style: TextStyle(
+                                                fontSize: 11,
+                                                color: Color(0xFF64748B))),
                                       ],
                                     ),
                                   ),
-                                  Text('$score', style: const TextStyle(fontWeight: FontWeight.w700)),
+                                  Text('$score',
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w700)),
                                   const SizedBox(width: 8),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 4),
                                     decoration: BoxDecoration(
                                       color: subject['grade'] == 'A+'
                                           ? const Color(0xFFDCFCE7)
@@ -1695,7 +2157,8 @@ class AcademicScreen extends StatelessWidget {
                                   value: score / 100,
                                   minHeight: 6,
                                   backgroundColor: const Color(0xFFE5E7EB),
-                                  valueColor: const AlwaysStoppedAnimation(Color(0xFF6366F1)),
+                                  valueColor: const AlwaysStoppedAnimation(
+                                      Color(0xFF6366F1)),
                                 ),
                               ),
                             ],
@@ -1714,40 +2177,103 @@ class AcademicScreen extends StatelessWidget {
   }
 }
 
+void _showInfoDialog({
+  required BuildContext context,
+  required String title,
+  required String subtitle,
+  required String content,
+}) {
+  showDialog<void>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: Text(title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            subtitle,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF64748B),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(content),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
+    ),
+  );
+}
+
 class EventsScreen extends StatelessWidget {
-  const EventsScreen({super.key});
+  final List<ParentEvent> events;
+
+  const EventsScreen({super.key, required this.events});
 
   @override
   Widget build(BuildContext context) {
-    final upcoming = [
-      {
-        'date': 'Jan 25',
-        'title': 'Annual Sports Day',
-        'time': '9:00 AM - 5:00 PM',
-        'location': 'School Sports Ground',
-        'people': 'All Students',
-        'type': 'Sports',
-        'color': Color(0xFFF97316)
-      },
-      {
-        'date': 'Jan 28',
-        'title': 'Parent-Teacher Meeting',
-        'time': '10:00 AM - 2:00 PM',
-        'location': 'Main Auditorium',
-        'people': 'Parents & Teachers',
-        'type': 'Meeting',
-        'color': Color(0xFF3B82F6)
-      },
-      {
-        'date': 'Feb 5',
-        'title': 'Science Exhibition',
-        'time': '11:00 AM - 4:00 PM',
-        'location': 'Science Lab',
-        'people': 'Classes 8-12',
-        'type': 'Academic',
-        'color': Color(0xFF7C3AED)
-      },
-    ];
+    final upcoming = events.isEmpty
+        ? [
+            {
+              'date': 'Jan 25',
+              'title': 'Annual Sports Day',
+              'time': '9:00 AM - 5:00 PM',
+              'location': 'School Sports Ground',
+              'people': 'All Students',
+              'type': 'Sports',
+              'color': const Color(0xFFF97316)
+            },
+            {
+              'date': 'Jan 28',
+              'title': 'Parent-Teacher Meeting',
+              'time': '10:00 AM - 2:00 PM',
+              'location': 'Main Auditorium',
+              'people': 'Parents & Teachers',
+              'type': 'Meeting',
+              'color': const Color(0xFF3B82F6)
+            },
+            {
+              'date': 'Feb 5',
+              'title': 'Science Exhibition',
+              'time': '11:00 AM - 4:00 PM',
+              'location': 'Science Lab',
+              'people': 'Classes 8-12',
+              'type': 'Academic',
+              'color': const Color(0xFF7C3AED)
+            },
+          ]
+        : events.map((event) {
+            final date = event.eventDate;
+            final category = event.category.toLowerCase();
+            final color = category.contains('sport')
+                ? const Color(0xFFF97316)
+                : category.contains('meeting')
+                    ? const Color(0xFF3B82F6)
+                    : const Color(0xFF7C3AED);
+            final time = event.endTime.isNotEmpty
+                ? '${event.startTime} - ${event.endTime}'
+                : event.startTime;
+            final dateLabel = date == null
+                ? '-- --'
+                : '${_monthName(date.month)} ${date.day}';
+            return {
+              'date': dateLabel,
+              'title': event.title,
+              'time': time,
+              'location': event.location,
+              'people': event.audience,
+              'type': event.category.isEmpty ? 'General' : event.category,
+              'color': color,
+            };
+          }).toList();
 
     final past = [
       {'title': 'Winter Break', 'date': '20 Dec 2025', 'type': 'Holiday'},
@@ -1783,10 +2309,13 @@ class EventsScreen extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text('Events Calendar',
-                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700)),
                             SizedBox(height: 4),
                             Text('Stay updated with school events',
-                                style: TextStyle(color: Color(0xFFE5E7FF), fontSize: 12)),
+                                style: TextStyle(
+                                    color: Color(0xFFE5E7FF), fontSize: 12)),
                           ],
                         ),
                       ),
@@ -1794,7 +2323,8 @@ class EventsScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
-                const Text('Upcoming Events', style: TextStyle(fontWeight: FontWeight.w700)),
+                const Text('Upcoming Events',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
                 const SizedBox(height: 12),
                 ...upcoming.map((event) {
                   final dateParts = (event['date'] as String).split(' ');
@@ -1803,7 +2333,12 @@ class EventsScreen extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(20),
-                      boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))],
+                      boxShadow: const [
+                        BoxShadow(
+                            color: Color(0x12000000),
+                            blurRadius: 16,
+                            offset: Offset(0, 8))
+                      ],
                     ),
                     child: Column(
                       children: [
@@ -1811,7 +2346,8 @@ class EventsScreen extends StatelessWidget {
                           height: 4,
                           decoration: BoxDecoration(
                             color: event['color'] as Color,
-                            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                            borderRadius: const BorderRadius.vertical(
+                                top: Radius.circular(20)),
                           ),
                         ),
                         Padding(
@@ -1829,60 +2365,80 @@ class EventsScreen extends StatelessWidget {
                                       borderRadius: BorderRadius.circular(16),
                                     ),
                                     child: Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
                                       children: [
                                         Text(dateParts[0],
                                             style: const TextStyle(
-                                                color: Color(0xFF4F46E5), fontWeight: FontWeight.w700, fontSize: 12)),
+                                                color: Color(0xFF4F46E5),
+                                                fontWeight: FontWeight.w700,
+                                                fontSize: 12)),
                                         Text(dateParts[1],
                                             style: const TextStyle(
-                                                color: Color(0xFF1E1B4B), fontWeight: FontWeight.w800)),
+                                                color: Color(0xFF1E1B4B),
+                                                fontWeight: FontWeight.w800)),
                                       ],
                                     ),
                                   ),
                                   const SizedBox(width: 12),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 10, vertical: 4),
                                           decoration: BoxDecoration(
-                                            color: (event['color'] as Color).withOpacity(0.15),
-                                            borderRadius: BorderRadius.circular(12),
+                                            color: (event['color'] as Color)
+                                                .withOpacity(0.15),
+                                            borderRadius:
+                                                BorderRadius.circular(12),
                                           ),
                                           child: Text(event['type'] as String,
                                               style: TextStyle(
-                                                  color: event['color'] as Color,
+                                                  color:
+                                                      event['color'] as Color,
                                                   fontSize: 11,
                                                   fontWeight: FontWeight.w700)),
                                         ),
                                         const SizedBox(height: 8),
                                         Text(event['title'] as String,
-                                            style: const TextStyle(fontWeight: FontWeight.w700)),
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.w700)),
                                         const SizedBox(height: 8),
                                         Text(event['time'] as String,
-                                            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                                            style: const TextStyle(
+                                                fontSize: 11,
+                                                color: Color(0xFF64748B))),
                                         Text(event['location'] as String,
-                                            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                                            style: const TextStyle(
+                                                fontSize: 11,
+                                                color: Color(0xFF64748B))),
                                         Text(event['people'] as String,
-                                            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                                            style: const TextStyle(
+                                                fontSize: 11,
+                                                color: Color(0xFF64748B))),
                                       ],
                                     ),
                                   ),
                                 ],
                               ),
                               const SizedBox(height: 12),
-                              Container(
+                              SizedBox(
                                 width: double.infinity,
-                                padding: const EdgeInsets.symmetric(vertical: 10),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFF1F5F9),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: const Center(
-                                  child: Text('View Details',
-                                      style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF1E293B))),
+                                child: FilledButton.tonal(
+                                  onPressed: () {
+                                    _showInfoDialog(
+                                      context: context,
+                                      title: event['title'] as String,
+                                      subtitle:
+                                          '${event['date']}  |  ${event['time']}',
+                                      content:
+                                          '${event['location']}\nAudience: ${event['people']}\nType: ${event['type']}',
+                                    );
+                                  },
+                                  child: const Text('View Details'),
                                 ),
                               ),
                             ],
@@ -1893,14 +2449,20 @@ class EventsScreen extends StatelessWidget {
                   );
                 }).toList(),
                 const SizedBox(height: 12),
-                const Text('Past Events', style: TextStyle(fontWeight: FontWeight.w700)),
+                const Text('Past Events',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
                 const SizedBox(height: 12),
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(20),
-                    boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))],
+                    boxShadow: const [
+                      BoxShadow(
+                          color: Color(0x12000000),
+                          blurRadius: 16,
+                          offset: Offset(0, 8))
+                    ],
                   ),
                   child: Column(
                     children: past.map((event) {
@@ -1915,28 +2477,37 @@ class EventsScreen extends StatelessWidget {
                                 color: const Color(0xFFE2E8F0),
                                 borderRadius: BorderRadius.circular(12),
                               ),
-                              child: const Icon(Icons.event, color: Color(0xFF64748B)),
+                              child: const Icon(Icons.event,
+                                  color: Color(0xFF64748B)),
                             ),
                             const SizedBox(width: 12),
                             Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(event['title'] as String, style: const TextStyle(fontWeight: FontWeight.w600)),
+                                  Text(event['title'] as String,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w600)),
                                   const SizedBox(height: 4),
                                   Text(event['date'] as String,
-                                      style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                                      style: const TextStyle(
+                                          fontSize: 11,
+                                          color: Color(0xFF64748B))),
                                 ],
                               ),
                             ),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 4),
                               decoration: BoxDecoration(
                                 color: const Color(0xFFEDE9FE),
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Text(event['type'] as String,
-                                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF7C3AED))),
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF7C3AED))),
                             ),
                           ],
                         ),
@@ -1954,57 +2525,47 @@ class EventsScreen extends StatelessWidget {
 }
 
 class NewsScreen extends StatelessWidget {
-  const NewsScreen({super.key});
+  final List<ParentAnnouncement> announcements;
+
+  const NewsScreen({super.key, required this.announcements});
+
+  String _formatDate(DateTime? value) {
+    if (value == null) return 'Recently';
+    final months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${value.day} ${months[value.month - 1]} ${value.year}';
+  }
+
+  Color _tagColor(String value) {
+    final normalized = value.toLowerCase();
+    if (normalized.contains('urgent') || normalized.contains('high')) {
+      return const Color(0xFFB91C1C);
+    }
+    if (normalized.contains('academic')) return const Color(0xFF1D4ED8);
+    if (normalized.contains('event')) return const Color(0xFF7C3AED);
+    return const Color(0xFF475569);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final pinned = [
-      {
-        'title': 'Winter Break Schedule',
-        'date': '15 Jan 2026',
-        'time': '10:30 AM',
-        'tags': ['Important', 'Academic'],
-        'content': 'School will remain closed from 20th December to 5th January.',
-      },
-      {
-        'title': 'Parent-Teacher Meeting',
-        'date': '14 Jan 2026',
-        'time': '2:15 PM',
-        'tags': ['Important', 'Meeting'],
-        'content': 'PTM scheduled for 28th January from 10 AM to 2 PM.',
-      },
-    ];
-
-    final announcements = [
-      {
-        'title': 'New Library Books',
-        'date': '12 Jan 2026',
-        'author': 'Library Dept',
-        'tag': 'Library',
-        'content': 'New collection of 500+ books available from 20th January.',
-      },
-      {
-        'title': 'Updated School Timings',
-        'date': '10 Jan 2026',
-        'author': 'Administration',
-        'tag': 'Important',
-        'content': 'Winter timings: 8:30 AM to 2:30 PM effective from 15th January.',
-      },
-      {
-        'title': 'Sports Day Registration',
-        'date': '8 Jan 2026',
-        'author': 'Sports Dept',
-        'tag': 'Sports',
-        'content': 'Register for Annual Sports Day through house captains by 18th January.',
-      },
-      {
-        'title': 'Science Exhibition',
-        'date': '7 Jan 2026',
-        'author': 'Science Dept',
-        'tag': 'Academic',
-        'content': 'Submit project proposals by 20th January for Feb 5 exhibition.',
-      },
-    ];
+    final sorted = [...announcements]..sort((a, b) {
+        final left = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final right = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return right.compareTo(left);
+      });
+    final pinned = sorted.take(2).toList();
 
     return Column(
       children: [
@@ -2025,8 +2586,8 @@ class NewsScreen extends StatelessWidget {
                     ),
                     borderRadius: BorderRadius.circular(24),
                   ),
-                  child: Row(
-                    children: const [
+                  child: const Row(
+                    children: [
                       Icon(Icons.notifications_active, color: Colors.white),
                       SizedBox(width: 10),
                       Expanded(
@@ -2034,10 +2595,13 @@ class NewsScreen extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text('Announcements',
-                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700)),
                             SizedBox(height: 4),
                             Text('Latest school updates and notices',
-                                style: TextStyle(color: Color(0xFFE5E7FF), fontSize: 12)),
+                                style: TextStyle(
+                                    color: Color(0xFFE5E7FF), fontSize: 12)),
                           ],
                         ),
                       ),
@@ -2045,110 +2609,209 @@ class NewsScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
-                Row(
-                  children: const [
-                    Icon(Icons.push_pin, size: 18, color: Color(0xFF4F46E5)),
-                    SizedBox(width: 6),
-                    Text('Pinned', style: TextStyle(fontWeight: FontWeight.w700)),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                ...pinned.map((item) {
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 12),
+                if (sorted.isEmpty)
+                  Container(
+                    width: double.infinity,
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: const Color(0xFFE0E7FF)),
-                      boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))],
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(item['title'] as String, style: const TextStyle(fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 6),
-                        Text('${item['date']} • ${item['time']}',
-                            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 8,
-                          children: (item['tags'] as List<String>)
-                              .map((tag) => Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: tag == 'Important' ? const Color(0xFFFEE2E2) : const Color(0xFFEDE9FE),
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: Text(tag,
-                                        style: TextStyle(
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.w700,
-                                            color: tag == 'Important' ? const Color(0xFFB91C1C) : const Color(0xFF7C3AED))),
-                                  ))
-                              .toList(),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(item['content'] as String, style: const TextStyle(fontSize: 12, color: Color(0xFF475569))),
-                        const SizedBox(height: 12),
-                        Container(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          width: double.infinity,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF4F46E5),
-                            borderRadius: BorderRadius.circular(12),
+                    child: const Text(
+                      'No announcements yet. Ask staff/admin to publish one from the portal.',
+                      style: TextStyle(color: Color(0xFF475569)),
+                    ),
+                  ),
+                if (pinned.isNotEmpty) ...[
+                  Row(
+                    children: const [
+                      Icon(Icons.push_pin, size: 18, color: Color(0xFF4F46E5)),
+                      SizedBox(width: 6),
+                      Text('Pinned',
+                          style: TextStyle(fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  ...pinned.map((item) {
+                    final category =
+                        item.category.isEmpty ? 'General' : item.category;
+                    final priority =
+                        item.priority.isEmpty ? 'Normal' : item.priority;
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: const Color(0xFFE0E7FF)),
+                        boxShadow: const [
+                          BoxShadow(
+                              color: Color(0x12000000),
+                              blurRadius: 16,
+                              offset: Offset(0, 8)),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(item.title,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 6),
+                          Text(
+                            '${_formatDate(item.createdAt)}  •  $category',
+                            style: const TextStyle(
+                                fontSize: 11, color: Color(0xFF64748B)),
                           ),
-                          child: const Center(
-                            child: Text('Read More',
-                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }).toList(),
-                const SizedBox(height: 8),
-                const Text('All Announcements', style: TextStyle(fontWeight: FontWeight.w700)),
-                const SizedBox(height: 12),
-                ...announcements.map((item) {
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(item['title'] as String, style: const TextStyle(fontWeight: FontWeight.w700)),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFF1F5F9),
-                                borderRadius: BorderRadius.circular(10),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFEDE9FE),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  category,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF7C3AED),
+                                  ),
+                                ),
                               ),
-                              child: Text(item['tag'] as String,
-                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF1F5F9),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  priority,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: _tagColor(priority),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            item.content,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 12, color: Color(0xFF475569)),
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: FilledButton(
+                              onPressed: () {
+                                _showInfoDialog(
+                                  context: context,
+                                  title: item.title,
+                                  subtitle:
+                                      '${_formatDate(item.createdAt)}  |  $category',
+                                  content: item.content,
+                                );
+                              },
+                              child: const Text('Read More'),
                             ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Text('${item['date']} • ${item['author']}',
-                            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
-                        const SizedBox(height: 8),
-                        Text(item['content'] as String, style: const TextStyle(fontSize: 12, color: Color(0xFF475569))),
-                        const SizedBox(height: 10),
-                        const Text('Read more',
-                            style: TextStyle(color: Color(0xFF4F46E5), fontWeight: FontWeight.w600, fontSize: 12)),
-                      ],
-                    ),
-                  );
-                }).toList(),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
+                if (sorted.length > 2) ...[
+                  const SizedBox(height: 8),
+                  const Text('All Announcements',
+                      style: TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 12),
+                  ...sorted.skip(2).map((item) {
+                    final category =
+                        item.category.isEmpty ? 'General' : item.category;
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: const [
+                          BoxShadow(
+                              color: Color(0x12000000),
+                              blurRadius: 16,
+                              offset: Offset(0, 8)),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Text(item.title,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w700)),
+                              ),
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF1F5F9),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  category,
+                                  style: const TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            _formatDate(item.createdAt),
+                            style: const TextStyle(
+                                fontSize: 11, color: Color(0xFF64748B)),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            item.content,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 12, color: Color(0xFF475569)),
+                          ),
+                          const SizedBox(height: 10),
+                          TextButton(
+                            onPressed: () {
+                              _showInfoDialog(
+                                context: context,
+                                title: item.title,
+                                subtitle:
+                                    '${_formatDate(item.createdAt)}  |  $category',
+                                content: item.content,
+                              );
+                            },
+                            child: const Text('Read more'),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
               ],
             ),
           ),
@@ -2178,15 +2841,15 @@ class ProfileScreen extends StatelessWidget {
     for (final score in scores) {
       if (score.subject.isEmpty) continue;
       subjectMap.putIfAbsent(score.subject, () => []);
-      subjectMap[score.subject]!.add(score.maxScore > 0 ? (score.score / score.maxScore) * 100 : 0);
+      subjectMap[score.subject]!
+          .add(score.maxScore > 0 ? (score.score / score.maxScore) * 100 : 0);
     }
-    final subjects = subjectMap.entries
-        .map((entry) {
-          final values = entry.value;
-          final avg = values.isEmpty ? 0 : values.reduce((a, b) => a + b) / values.length;
-          return {'name': entry.key, 'score': avg};
-        })
-        .toList();
+    final subjects = subjectMap.entries.map((entry) {
+      final values = entry.value;
+      final avg =
+          values.isEmpty ? 0 : values.reduce((a, b) => a + b) / values.length;
+      return {'name': entry.key, 'score': avg};
+    }).toList();
 
     return Column(
       children: [
@@ -2212,28 +2875,37 @@ class ProfileScreen extends StatelessWidget {
                       CircleAvatar(
                         radius: 36,
                         backgroundColor: Colors.white,
-                        child: Text('A', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+                        child: Text('A',
+                            style: TextStyle(
+                                fontSize: 26, fontWeight: FontWeight.bold)),
                       ),
                       SizedBox(height: 12),
-                      Text((student?.fullName.isNotEmpty ?? false)
+                      Text(
+                          (student?.fullName.isNotEmpty ?? false)
                               ? student!.fullName
                               : (sessionUser?.name.isNotEmpty ?? false)
                                   ? sessionUser!.name
                                   : 'Parent User',
-                          style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700)),
                       SizedBox(height: 4),
-                      Text((student != null && student!.classLabel.isNotEmpty)
+                      Text(
+                          (student != null && student!.classLabel.isNotEmpty)
                               ? '${student!.classLabel} • Roll ${student!.rollNumber}'
                               : (sessionUser?.phone.isNotEmpty ?? false)
                                   ? sessionUser!.phone
                                   : 'Class 10-A • JNV2024-1045',
-                          style: const TextStyle(color: Color(0xFFE5E7FF), fontSize: 12)),
+                          style: const TextStyle(
+                              color: Color(0xFFE5E7FF), fontSize: 12)),
                       SizedBox(height: 12),
                       Row(
                         children: [
                           Expanded(child: StatCard(title: 'GPA', value: '9.2')),
                           SizedBox(width: 10),
-                          Expanded(child: StatCard(title: 'Attend', value: '94.5%')),
+                          Expanded(
+                              child: StatCard(title: 'Attend', value: '94.5%')),
                           SizedBox(width: 10),
                           Expanded(child: StatCard(title: 'Rank', value: '#3')),
                         ],
@@ -2242,46 +2914,67 @@ class ProfileScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
-                const InfoSectionTitle(title: 'Student Information', icon: Icons.person),
+                const InfoSectionTitle(
+                    title: 'Student Information', icon: Icons.person),
                 const SizedBox(height: 12),
                 InfoCard(
                   rows: [
-                    const InfoRow(label: 'Date of Birth', value: 'On file', icon: Icons.cake),
-                    const InfoRow(label: 'Admission Date', value: 'On file', icon: Icons.calendar_today),
+                    const InfoRow(
+                        label: 'Date of Birth',
+                        value: 'On file',
+                        icon: Icons.cake),
+                    const InfoRow(
+                        label: 'Admission Date',
+                        value: 'On file',
+                        icon: Icons.calendar_today),
                     InfoRow(
                       label: 'House',
-                      value: (student?.house.isNotEmpty ?? false) ? student!.house : 'Not assigned',
+                      value: (student?.house.isNotEmpty ?? false)
+                          ? student!.house
+                          : 'Not assigned',
                       icon: Icons.home,
                     ),
                   ],
                 ),
                 const SizedBox(height: 16),
-                const InfoSectionTitle(title: 'Parent Information', icon: Icons.family_restroom),
+                const InfoSectionTitle(
+                    title: 'Parent Information', icon: Icons.family_restroom),
                 const SizedBox(height: 12),
                 InfoCard(
                   rows: [
                     InfoRow(
                       label: 'Parent Name',
-                      value: (sessionUser?.name.isNotEmpty ?? false) ? sessionUser!.name : 'Pending',
+                      value: (sessionUser?.name.isNotEmpty ?? false)
+                          ? sessionUser!.name
+                          : 'Pending',
                       icon: Icons.person_outline,
                     ),
                     InfoRow(
                       label: 'Contact',
-                      value: (sessionUser?.phone.isNotEmpty ?? false) ? sessionUser!.phone : 'Pending',
+                      value: (sessionUser?.phone.isNotEmpty ?? false)
+                          ? sessionUser!.phone
+                          : 'Pending',
                       icon: Icons.phone,
                     ),
-                    const InfoRow(label: 'Email', value: 'Not set', icon: Icons.email),
+                    const InfoRow(
+                        label: 'Email', value: 'Not set', icon: Icons.email),
                   ],
                 ),
                 const SizedBox(height: 16),
-                const InfoSectionTitle(title: 'Current Subjects', icon: Icons.menu_book),
+                const InfoSectionTitle(
+                    title: 'Current Subjects', icon: Icons.menu_book),
                 const SizedBox(height: 12),
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(20),
-                    boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))],
+                    boxShadow: const [
+                      BoxShadow(
+                          color: Color(0x12000000),
+                          blurRadius: 16,
+                          offset: Offset(0, 8))
+                    ],
                   ),
                   child: Column(
                     children: subjects.isEmpty
@@ -2293,52 +2986,63 @@ class ProfileScreen extends StatelessWidget {
                             ),
                           ]
                         : subjects.map((item) {
-                      final avgScore = item['score'] as double;
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                            final avgScore = item['score'] as double;
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
                                     children: [
-                                      Text(item['name'] as String,
-                                          style: const TextStyle(fontWeight: FontWeight.w600)),
-                                      const SizedBox(height: 4),
-                                      const Text('Calculated average',
-                                          style: TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(item['name'] as String,
+                                                style: const TextStyle(
+                                                    fontWeight:
+                                                        FontWeight.w600)),
+                                            const SizedBox(height: 4),
+                                            const Text('Calculated average',
+                                                style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: Color(0xFF64748B))),
+                                          ],
+                                        ),
+                                      ),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFDCFCE7),
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                        ),
+                                        child: Text(
+                                            '${avgScore.toStringAsFixed(1)}%',
+                                            style: const TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w700,
+                                                color: Color(0xFF15803D))),
+                                      ),
                                     ],
                                   ),
-                                ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFDCFCE7),
-                                    borderRadius: BorderRadius.circular(12),
+                                  const SizedBox(height: 6),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: LinearProgressIndicator(
+                                      value: avgScore / 100,
+                                      minHeight: 6,
+                                      backgroundColor: const Color(0xFFE5E7EB),
+                                      valueColor: const AlwaysStoppedAnimation(
+                                          Color(0xFF6366F1)),
+                                    ),
                                   ),
-                                  child: Text('${avgScore.toStringAsFixed(1)}%',
-                                      style: const TextStyle(
-                                          fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF15803D))),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 6),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(4),
-                              child: LinearProgressIndicator(
-                                value: avgScore / 100,
-                                minHeight: 6,
-                                backgroundColor: const Color(0xFFE5E7EB),
-                                valueColor: const AlwaysStoppedAnimation(Color(0xFF6366F1)),
+                                ],
                               ),
-                            ),
-                          ],
-                        ),
-                      );
-                    }).toList(),
+                            );
+                          }).toList(),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -2400,7 +3104,10 @@ class InfoCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))],
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 8))
+        ],
       ),
       child: Column(
         children: rows
@@ -2415,16 +3122,21 @@ class InfoCard extends StatelessWidget {
                           color: const Color(0xFFE0E7FF),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Icon(row.icon, size: 18, color: const Color(0xFF4F46E5)),
+                        child: Icon(row.icon,
+                            size: 18, color: const Color(0xFF4F46E5)),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(row.label, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                            Text(row.label,
+                                style: const TextStyle(
+                                    fontSize: 11, color: Color(0xFF64748B))),
                             const SizedBox(height: 2),
-                            Text(row.value, style: const TextStyle(fontWeight: FontWeight.w600)),
+                            Text(row.value,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600)),
                           ],
                         ),
                       ),

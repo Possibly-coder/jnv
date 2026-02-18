@@ -31,16 +31,16 @@ type User struct {
 }
 
 type Student struct {
-	ID             string    `json:"id"`
-	SchoolID       string    `json:"school_id"`
-	FullName       string    `json:"full_name"`
-	ClassLabel     string    `json:"class_label"`
-	RollNumber     int       `json:"roll_number"`
-	DateOfBirth    time.Time `json:"date_of_birth"`
-	House          string    `json:"house"`
-	ParentPhone    string    `json:"parent_phone"`
-	AdmissionYear  int       `json:"admission_year"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	SchoolID      string    `json:"school_id"`
+	FullName      string    `json:"full_name"`
+	ClassLabel    string    `json:"class_label"`
+	RollNumber    int       `json:"roll_number"`
+	DateOfBirth   time.Time `json:"date_of_birth"`
+	House         string    `json:"house"`
+	ParentPhone   string    `json:"parent_phone"`
+	AdmissionYear int       `json:"admission_year"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type ParentLink struct {
@@ -84,14 +84,14 @@ type Exam struct {
 }
 
 type Score struct {
-	ID         string    `json:"id"`
-	ExamID     string    `json:"exam_id"`
-	StudentID  string    `json:"student_id"`
-	Subject    string    `json:"subject"`
-	Score      float32   `json:"score"`
-	MaxScore   float32   `json:"max_score"`
-	Grade      string    `json:"grade"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID        string    `json:"id"`
+	ExamID    string    `json:"exam_id"`
+	StudentID string    `json:"student_id"`
+	Subject   string    `json:"subject"`
+	Score     float32   `json:"score"`
+	MaxScore  float32   `json:"max_score"`
+	Grade     string    `json:"grade"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Announcement struct {
@@ -104,4 +104,37 @@ type Announcement struct {
 	Published bool      `json:"published"`
 	CreatedBy string    `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type Event struct {
+	ID          string     `json:"id"`
+	SchoolID    string     `json:"school_id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	EventDate   time.Time  `json:"event_date"`
+	StartTime   string     `json:"start_time"`
+	EndTime     string     `json:"end_time"`
+	Location    string     `json:"location"`
+	Audience    string     `json:"audience"`
+	Category    string     `json:"category"`
+	Published   bool       `json:"published"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	CreatedBy   string     `json:"created_by"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+type DashboardWidget struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Value string `json:"value"`
+	Hint  string `json:"hint"`
+	Icon  string `json:"icon"`
+}
+
+type AppConfig struct {
+	SchoolID         string            `json:"school_id"`
+	FeatureFlags     map[string]bool   `json:"feature_flags"`
+	DashboardWidgets []DashboardWidget `json:"dashboard_widgets"`
+	UpdatedBy        string            `json:"updated_by"`
+	UpdatedAt        time.Time         `json:"updated_at"`
 }

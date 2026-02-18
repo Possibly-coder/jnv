@@ -25,8 +25,35 @@ type StudentRecord = {
   admission_year: number;
 };
 
+type EventRecord = {
+  id: string;
+  title: string;
+  description: string;
+  event_date: string;
+  start_time: string;
+  end_time: string;
+  location: string;
+  audience: string;
+  category: string;
+  published: boolean;
+};
+
+type DashboardWidgetRecord = {
+  key: string;
+  label: string;
+  value: string;
+  hint: string;
+  icon: string;
+};
+
+type AppConfigRecord = {
+  feature_flags: Record<string, boolean>;
+  dashboard_widgets: DashboardWidgetRecord[];
+};
+
+const API_BASE_URL = 'https://jnv-web.onrender.com';
+
 export default function App() {
-  const [apiBase, setApiBase] = useState('http://localhost:8080');
   const [token, setToken] = useState('dev:+919999999999:admin');
   const [status, setStatus] = useState('');
 
@@ -61,6 +88,26 @@ export default function App() {
   const [studentHouse, setStudentHouse] = useState('Ashoka');
   const [studentParentPhone, setStudentParentPhone] = useState('');
   const [studentAdmissionYear, setStudentAdmissionYear] = useState(`${new Date().getFullYear()}`);
+  const [events, setEvents] = useState<EventRecord[]>([]);
+  const [eventTitle, setEventTitle] = useState('');
+  const [eventDescription, setEventDescription] = useState('');
+  const [eventDate, setEventDate] = useState('');
+  const [eventStartTime, setEventStartTime] = useState('');
+  const [eventEndTime, setEventEndTime] = useState('');
+  const [eventLocation, setEventLocation] = useState('');
+  const [eventAudience, setEventAudience] = useState('All Students');
+  const [eventCategory, setEventCategory] = useState('Academic');
+  const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({
+    show_events: true,
+    show_announcements: true,
+    show_attendance: false,
+    show_academic_tab: true,
+  });
+  const [dashboardWidgets, setDashboardWidgets] = useState<DashboardWidgetRecord[]>([
+    { key: 'gpa', label: 'GPA', value: '9.2', hint: 'This term', icon: 'school' },
+    { key: 'attendance', label: 'Attend', value: '94.5%', hint: 'Monthly avg', icon: 'check_circle' },
+    { key: 'rank', label: 'Rank', value: '#3', hint: 'Class standing', icon: 'emoji_events' },
+  ]);
 
   const authHeader = useMemo(() => ({
     Authorization: `Bearer ${token}`,
@@ -72,7 +119,7 @@ export default function App() {
   }), [token]);
 
   const postJSON = async (path: string, payload: unknown) => {
-    const res = await fetch(`${apiBase}${path}`, {
+    const res = await fetch(`${API_BASE_URL}${path}`, {
       method: 'POST',
       headers: authHeader,
       body: JSON.stringify(payload),
@@ -85,7 +132,7 @@ export default function App() {
   };
 
   const getJSON = async (path: string) => {
-    const res = await fetch(`${apiBase}${path}`, {
+    const res = await fetch(`${API_BASE_URL}${path}`, {
       headers: authHeader,
     });
     if (!res.ok) {
@@ -163,6 +210,96 @@ export default function App() {
     } catch (err) {
       setStatus(`Error: ${(err as Error).message}`);
     }
+  };
+
+  const loadEvents = async () => {
+    try {
+      setStatus('Loading events...');
+      const items = await getJSON('/api/v1/events');
+      setEvents(Array.isArray(items) ? (items as EventRecord[]) : []);
+      setStatus('Events loaded.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+      setEvents([]);
+    }
+  };
+
+  const createEvent = async () => {
+    try {
+      if (!eventTitle || !eventDate) {
+        setStatus('Please enter event title and event date.');
+        return;
+      }
+      setStatus('Creating event draft...');
+      await postJSON('/api/v1/events', {
+        title: eventTitle,
+        description: eventDescription,
+        event_date: eventDate,
+        start_time: eventStartTime,
+        end_time: eventEndTime,
+        location: eventLocation,
+        audience: eventAudience,
+        category: eventCategory,
+      });
+      setEventTitle('');
+      setEventDescription('');
+      setEventDate('');
+      setEventStartTime('');
+      setEventEndTime('');
+      setEventLocation('');
+      setEventAudience('All Students');
+      setEventCategory('Academic');
+      await loadEvents();
+      setStatus('Event created as draft.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
+  };
+
+  const publishEvent = async (id: string) => {
+    try {
+      setStatus('Publishing event...');
+      await postJSON(`/api/v1/events/${id}/publish`, {});
+      await loadEvents();
+      setStatus('Event published.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
+  };
+
+  const loadAppConfig = async () => {
+    try {
+      setStatus('Loading app config...');
+      const config = await getJSON('/api/v1/app-config') as AppConfigRecord;
+      setFeatureFlags(config.feature_flags ?? {});
+      setDashboardWidgets(Array.isArray(config.dashboard_widgets) ? config.dashboard_widgets : []);
+      setStatus('App config loaded.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
+  };
+
+  const saveAppConfig = async () => {
+    try {
+      setStatus('Saving app config...');
+      await postJSON('/api/v1/app-config', {
+        feature_flags: featureFlags,
+        dashboard_widgets: dashboardWidgets,
+      });
+      setStatus('App config saved.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
+  };
+
+  const setFlag = (key: string, value: boolean) => {
+    setFeatureFlags((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const updateWidget = (index: number, field: keyof DashboardWidgetRecord, value: string) => {
+    setDashboardWidgets((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, [field]: value } : item))
+    );
   };
 
   const loadStudents = async () => {
@@ -274,7 +411,7 @@ export default function App() {
       const examId = await createExam(uploadExam, uploadClass, uploadTerm, uploadDate);
       const formData = new FormData();
       formData.append('file', uploadFile);
-      const res = await fetch(`${apiBase}/api/v1/exams/${examId}/scores/upload`, {
+      const res = await fetch(`${API_BASE_URL}/api/v1/exams/${examId}/scores/upload`, {
         method: 'POST',
         headers: authOnlyHeader,
         body: formData,
@@ -307,12 +444,7 @@ export default function App() {
           </div>
         </div>
         <div className="header-actions">
-          <input
-            className="token-input"
-            value={apiBase}
-            onChange={(event) => setApiBase(event.target.value)}
-            placeholder="API base"
-          />
+          <span className="api-badge">API: {API_BASE_URL}</span>
           <input
             className="token-input"
             value={token}
@@ -636,6 +768,147 @@ export default function App() {
               ))}
             </div>
           ) : null}
+        </section>
+
+        <section className="card">
+          <h2>Events CMS</h2>
+          <p>Create/publish events shown in mobile dashboard and events tab.</p>
+          <div className="section-actions">
+            <button className="app__button" onClick={loadEvents}>Refresh events</button>
+          </div>
+          <div className="field">
+            Title
+            <input
+              type="text"
+              value={eventTitle}
+              onChange={(event) => setEventTitle(event.target.value)}
+              placeholder="Annual Sports Day"
+            />
+          </div>
+          <div className="field">
+            Description
+            <textarea
+              rows={3}
+              value={eventDescription}
+              onChange={(event) => setEventDescription(event.target.value)}
+              placeholder="Describe the event for parents"
+            />
+          </div>
+          <div className="form-grid">
+            <label className="field">
+              Event Date
+              <input type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} />
+            </label>
+            <label className="field">
+              Start Time
+              <input value={eventStartTime} onChange={(event) => setEventStartTime(event.target.value)} placeholder="10:00 AM" />
+            </label>
+            <label className="field">
+              End Time
+              <input value={eventEndTime} onChange={(event) => setEventEndTime(event.target.value)} placeholder="1:00 PM" />
+            </label>
+            <label className="field">
+              Category
+              <input value={eventCategory} onChange={(event) => setEventCategory(event.target.value)} placeholder="Academic" />
+            </label>
+            <label className="field">
+              Location
+              <input value={eventLocation} onChange={(event) => setEventLocation(event.target.value)} placeholder="Main Hall" />
+            </label>
+            <label className="field">
+              Audience
+              <input value={eventAudience} onChange={(event) => setEventAudience(event.target.value)} placeholder="All Students" />
+            </label>
+          </div>
+          <button className="app__button app__button--primary" onClick={createEvent}>
+            Create event draft
+          </button>
+          {events.length > 0 ? (
+            <div className="announcement-list">
+              {events.map((item) => (
+                <div className="announcement-item" key={item.id}>
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{formatDate(item.event_date)} • {item.category || 'General'}</p>
+                  </div>
+                  {item.published ? (
+                    <span className="badge badge--live">Published</span>
+                  ) : (
+                    <button className="app__button app__button--primary" onClick={() => publishEvent(item.id)}>
+                      Publish
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">No events created yet.</div>
+          )}
+        </section>
+
+        <section className="card card--wide">
+          <h2>Mobile App Config</h2>
+          <p>Feature flags and dashboard widgets are delivered from backend (no APK rebuild needed for these changes).</p>
+          <div className="section-actions">
+            <button className="app__button" onClick={loadAppConfig}>Load config</button>
+            <button className="app__button app__button--primary" onClick={saveAppConfig}>Save config</button>
+          </div>
+          <div className="form-grid">
+            <label className="field">
+              <input
+                type="checkbox"
+                checked={Boolean(featureFlags.show_events)}
+                onChange={(event) => setFlag('show_events', event.target.checked)}
+              />
+              Show events
+            </label>
+            <label className="field">
+              <input
+                type="checkbox"
+                checked={Boolean(featureFlags.show_announcements)}
+                onChange={(event) => setFlag('show_announcements', event.target.checked)}
+              />
+              Show announcements
+            </label>
+            <label className="field">
+              <input
+                type="checkbox"
+                checked={Boolean(featureFlags.show_attendance)}
+                onChange={(event) => setFlag('show_attendance', event.target.checked)}
+              />
+              Show attendance (future)
+            </label>
+            <label className="field">
+              <input
+                type="checkbox"
+                checked={Boolean(featureFlags.show_academic_tab)}
+                onChange={(event) => setFlag('show_academic_tab', event.target.checked)}
+              />
+              Show academic tab
+            </label>
+          </div>
+          <table className="score-table">
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Label</th>
+                <th>Value</th>
+                <th>Hint</th>
+                <th>Icon</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dashboardWidgets.map((widget, index) => (
+                <tr key={`${widget.key}-${index}`}>
+                  <td><input value={widget.key} onChange={(event) => updateWidget(index, 'key', event.target.value)} /></td>
+                  <td><input value={widget.label} onChange={(event) => updateWidget(index, 'label', event.target.value)} /></td>
+                  <td><input value={widget.value} onChange={(event) => updateWidget(index, 'value', event.target.value)} /></td>
+                  <td><input value={widget.hint} onChange={(event) => updateWidget(index, 'hint', event.target.value)} /></td>
+                  <td><input value={widget.icon} onChange={(event) => updateWidget(index, 'icon', event.target.value)} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </section>
 
         <section className="card">

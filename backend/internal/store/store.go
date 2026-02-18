@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -408,6 +409,127 @@ func (s *Store) ListAnnouncements(ctx context.Context, schoolID string, includeU
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (s *Store) CreateEvent(ctx context.Context, event models.Event) (*models.Event, error) {
+	if event.ID == "" {
+		event.ID = uuid.NewString()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO events (
+			id, school_id, title, description, event_date, start_time, end_time,
+			location, audience, category, published, created_by, created_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, event.ID, event.SchoolID, event.Title, event.Description, event.EventDate, event.StartTime,
+		event.EndTime, event.Location, event.Audience, event.Category, event.Published, event.CreatedBy, event.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+func (s *Store) PublishEvent(ctx context.Context, eventID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE events
+		SET published = true, published_at = now()
+		WHERE id = $1
+	`, eventID)
+	return err
+}
+
+func (s *Store) ListEvents(ctx context.Context, schoolID string, includeUnpublished bool) ([]models.Event, error) {
+	query := `
+		SELECT id, school_id, title, description, event_date, start_time, end_time,
+		       location, audience, category, published, published_at, created_by, created_at
+		FROM events
+		WHERE school_id = $1
+	`
+	if !includeUnpublished {
+		query += " AND published = true"
+	}
+	query += " ORDER BY event_date ASC, created_at DESC"
+	rows, err := s.db.QueryContext(ctx, query, schoolID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []models.Event
+	for rows.Next() {
+		var item models.Event
+		if err := rows.Scan(
+			&item.ID, &item.SchoolID, &item.Title, &item.Description, &item.EventDate, &item.StartTime,
+			&item.EndTime, &item.Location, &item.Audience, &item.Category, &item.Published,
+			&item.PublishedAt, &item.CreatedBy, &item.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) GetAppConfig(ctx context.Context, schoolID string) (*models.AppConfig, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT school_id, feature_flags, dashboard_widgets, coalesce(updated_by::text, ''), updated_at
+		FROM app_configs
+		WHERE school_id = $1
+	`, schoolID)
+	var config models.AppConfig
+	var featureFlagsRaw []byte
+	var dashboardWidgetsRaw []byte
+	if err := row.Scan(&config.SchoolID, &featureFlagsRaw, &dashboardWidgetsRaw, &config.UpdatedBy, &config.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return &models.AppConfig{
+				SchoolID:         schoolID,
+				FeatureFlags:     map[string]bool{},
+				DashboardWidgets: []models.DashboardWidget{},
+			}, nil
+		}
+		return nil, err
+	}
+	if len(featureFlagsRaw) > 0 {
+		if err := json.Unmarshal(featureFlagsRaw, &config.FeatureFlags); err != nil {
+			return nil, err
+		}
+	}
+	if config.FeatureFlags == nil {
+		config.FeatureFlags = map[string]bool{}
+	}
+	if len(dashboardWidgetsRaw) > 0 {
+		if err := json.Unmarshal(dashboardWidgetsRaw, &config.DashboardWidgets); err != nil {
+			return nil, err
+		}
+	}
+	if config.DashboardWidgets == nil {
+		config.DashboardWidgets = []models.DashboardWidget{}
+	}
+	return &config, nil
+}
+
+func (s *Store) UpsertAppConfig(ctx context.Context, config models.AppConfig) error {
+	featureFlags, err := json.Marshal(config.FeatureFlags)
+	if err != nil {
+		return err
+	}
+	dashboardWidgets, err := json.Marshal(config.DashboardWidgets)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO app_configs (school_id, feature_flags, dashboard_widgets, updated_by, updated_at)
+		VALUES ($1, $2::jsonb, $3::jsonb, $4, now())
+		ON CONFLICT (school_id) DO UPDATE
+		SET feature_flags = excluded.feature_flags,
+		    dashboard_widgets = excluded.dashboard_widgets,
+		    updated_by = excluded.updated_by,
+		    updated_at = now()
+	`, config.SchoolID, string(featureFlags), string(dashboardWidgets), config.UpdatedBy)
+	return err
 }
 
 func (s *Store) CreateExam(ctx context.Context, exam models.Exam) (*models.Exam, error) {

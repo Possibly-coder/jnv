@@ -30,6 +30,15 @@ func (a API) Router() http.Handler {
 	mux.Handle("POST /api/v1/announcements", protected(http.HandlerFunc(announcementHandler.Create)))
 	mux.Handle("POST /api/v1/announcements/{id}/publish", protected(http.HandlerFunc(announcementHandler.Publish)))
 
+	eventsHandler := handlers.EventsHandler{Store: a.Store}
+	mux.Handle("GET /api/v1/events", protected(http.HandlerFunc(eventsHandler.List)))
+	mux.Handle("POST /api/v1/events", protected(http.HandlerFunc(eventsHandler.Create)))
+	mux.Handle("POST /api/v1/events/{id}/publish", protected(http.HandlerFunc(eventsHandler.Publish)))
+
+	appConfigHandler := handlers.AppConfigHandler{Store: a.Store}
+	mux.Handle("GET /api/v1/app-config", protected(http.HandlerFunc(appConfigHandler.Get)))
+	mux.Handle("POST /api/v1/app-config", protected(http.HandlerFunc(appConfigHandler.Upsert)))
+
 	parentLinkHandler := handlers.ParentLinkHandler{Store: a.Store}
 	mux.Handle("POST /api/v1/parent-links", protected(http.HandlerFunc(parentLinkHandler.Create)))
 	mux.Handle("POST /api/v1/parent-links/request", protected(http.HandlerFunc(parentLinkHandler.CreateByClassRoll)))

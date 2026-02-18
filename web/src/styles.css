@@ -31,6 +31,7 @@ body {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .token-input {
@@ -44,6 +45,19 @@ body {
 
 .token-input::placeholder {
   color: rgba(255, 255, 255, 0.7);
+}
+
+.api-badge {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.14);
+  color: white;
+  padding: 8px 12px;
+  font-size: 12px;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app__brand {

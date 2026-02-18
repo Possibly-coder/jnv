@@ -25,6 +25,10 @@ HTTP_ADDR=:8080
 ```bash
 psql -U YOUR_DB_USER -d jnv -f backend/migrations/001_init.sql
 psql -U YOUR_DB_USER -d jnv -f backend/migrations/002_seed_district_schools.sql
+# Optional but recommended for UI testing/demo data:
+psql -U YOUR_DB_USER -d jnv -f backend/migrations/003_seed_demo_data.sql
+psql -U YOUR_DB_USER -d jnv -f backend/migrations/004_add_events_and_app_config.sql
+psql -U YOUR_DB_USER -d jnv -f backend/migrations/005_seed_events_and_app_config.sql
 ```
 
 ### Start backend
@@ -67,8 +71,10 @@ Web runs on: `http://localhost:5173`
 When deployed, share this staff portal URL with schools.
 
 ### In the web UI header
-- API base: `http://localhost:8080`
 - Token: `dev:+919999999999:admin`
+
+API base is fixed in code to:
+`https://jnv-web.onrender.com`
 
 Token format:
 `dev:<phone>:<role>`
