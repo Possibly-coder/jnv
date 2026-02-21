@@ -11,7 +11,7 @@ import (
 )
 
 type AuthHandler struct {
-	Store       *store.Store
+	Store        *store.Store
 	AuthProvider auth.Provider
 }
 
@@ -31,14 +31,14 @@ func (h AuthHandler) Session(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
-	log.Printf("[session] token verified phone=%s role=%s", claims.Phone, claims.Role)
-
-	if claims.Phone == "" {
-		writeError(w, http.StatusBadRequest, "phone missing in token")
+	principal := sessionPrincipalFromClaims(claims)
+	log.Printf("[session] token verified principal=%s role=%s", principal, claims.Role)
+	if principal == "" {
+		writeError(w, http.StatusBadRequest, "identity missing in token")
 		return
 	}
 
-	user, err := h.Store.GetUserByPhone(r.Context(), claims.Phone)
+	user, err := h.Store.GetUserByPhone(r.Context(), principal)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to fetch user")
 		return
@@ -54,18 +54,20 @@ func (h AuthHandler) Session(w http.ResponseWriter, r *http.Request) {
 		created, err := h.Store.CreateUser(r.Context(), models.User{
 			Role:     role,
 			FullName: fullName,
-			Phone:    claims.Phone,
+			Phone:    principal,
 			Email:    claims.Email,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create user")
 			return
 		}
-		log.Printf("[session] created user id=%s role=%s phone=%s", created.ID, created.Role, created.Phone)
+		log.Printf("[session] created user id=%s role=%s principal=%s", created.ID, created.Role, created.Phone)
+		auditLog(r.Context(), "auth.session.created_user", created, map[string]interface{}{})
 		writeJSON(w, http.StatusOK, authSessionResponse{User: *created})
 		return
 	}
 
+	auditLog(r.Context(), "auth.session.login", user, map[string]interface{}{})
 	writeJSON(w, http.StatusOK, authSessionResponse{User: *user})
 }
 
@@ -90,4 +92,17 @@ func claimsRoleOrParent(value string) models.Role {
 	default:
 		return models.RoleParent
 	}
+}
+
+func sessionPrincipalFromClaims(claims auth.Claims) string {
+	if phone := strings.TrimSpace(claims.Phone); phone != "" {
+		return phone
+	}
+	if email := strings.ToLower(strings.TrimSpace(claims.Email)); email != "" {
+		return "email:" + email
+	}
+	if uid := strings.TrimSpace(claims.UID); uid != "" {
+		return "uid:" + uid
+	}
+	return ""
 }

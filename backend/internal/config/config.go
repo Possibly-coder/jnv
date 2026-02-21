@@ -8,25 +8,27 @@ import (
 )
 
 type Config struct {
-	Env         string
-	HTTPAddr    string
-	DatabaseURL string
-	AuthMode    string
-	DevAuthPhone string
-	FirebaseProjectID string
+	Env                     string
+	HTTPAddr                string
+	DatabaseURL             string
+	AuthMode                string
+	DevAuthPhone            string
+	FirebaseProjectID       string
 	FirebaseCredentialsFile string
+	CORSAllowedOrigins      []string
 }
 
 func Load() Config {
 	loadDotEnv()
 	return Config{
-		Env:         getEnv("APP_ENV", "development"),
-		HTTPAddr:    getEnv("HTTP_ADDR", ":8080"),
-		DatabaseURL: getEnv("DATABASE_URL", ""),
-		AuthMode:    getEnv("AUTH_MODE", "dev"),
-		DevAuthPhone: getEnv("DEV_AUTH_PHONE", "+919999999999"),
-		FirebaseProjectID: getEnv("FIREBASE_PROJECT_ID", ""),
+		Env:                     getEnv("APP_ENV", "development"),
+		HTTPAddr:                getEnv("HTTP_ADDR", ":8080"),
+		DatabaseURL:             getEnv("DATABASE_URL", ""),
+		AuthMode:                getEnv("AUTH_MODE", "dev"),
+		DevAuthPhone:            getEnv("DEV_AUTH_PHONE", "+919999999999"),
+		FirebaseProjectID:       getEnv("FIREBASE_PROJECT_ID", ""),
 		FirebaseCredentialsFile: getEnv("FIREBASE_CREDENTIALS_FILE", ""),
+		CORSAllowedOrigins:      parseCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")),
 	}
 }
 
@@ -63,4 +65,16 @@ func loadDotEnv() {
 			_ = os.Setenv(key, val)
 		}
 	}
+}
+
+func parseCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	var out []string
+	for _, item := range parts {
+		trimmed := strings.TrimSpace(item)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }

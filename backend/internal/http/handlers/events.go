@@ -1,17 +1,21 @@
 package handlers
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"jnv/backend/internal/httpctx"
 	"jnv/backend/internal/models"
+	"jnv/backend/internal/notify"
 	"jnv/backend/internal/store"
 )
 
 type EventsHandler struct {
-	Store *store.Store
+	Store    *store.Store
+	Notifier notify.Sender
 }
 
 type createEventRequest struct {
@@ -71,6 +75,10 @@ func (h EventsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create event")
 		return
 	}
+	auditLog(r.Context(), "event.created", user, map[string]interface{}{
+		"event_id": event.ID,
+		"title":    event.Title,
+	})
 	writeJSON(w, http.StatusCreated, event)
 }
 
@@ -93,6 +101,13 @@ func (h EventsHandler) Publish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to publish")
 		return
 	}
+	_ = h.Notifier.SendToSchoolParents(r.Context(), user.SchoolID, "New event published", "Check the latest event details in your app.", map[string]string{
+		"type":     "event",
+		"event_id": id,
+	})
+	auditLog(r.Context(), "event.published", user, map[string]interface{}{
+		"event_id": id,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "published"})
 }
 
@@ -109,4 +124,33 @@ func (h EventsHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (h EventsHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	user := httpctx.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if !hasRole(user, models.RoleAdmin) {
+		writeError(w, http.StatusForbidden, "admin required")
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing id")
+		return
+	}
+	if err := h.Store.DeleteEvent(r.Context(), id, user.SchoolID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "event not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to delete event")
+		return
+	}
+	auditLog(r.Context(), "event.deleted", user, map[string]interface{}{
+		"event_id": id,
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

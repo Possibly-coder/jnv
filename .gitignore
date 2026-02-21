@@ -5,7 +5,10 @@ dist/
 *.log
 coverage/
 build/
-android/
-ios/
 .idea/
 .vscode/
+# Flutter generated
+**/.dart_tool/
+**/.packages
+**/build/
+*.tsbuildinfo

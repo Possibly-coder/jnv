@@ -69,3 +69,5 @@ The portal should point to your backend API URL and use secure HTTPS.
 - Restrict API CORS origin from `*` to your frontend domains.
 - Use HTTPS for both app API and staff portal.
 - Add monitoring/logging for OTP and auth failures.
+- Ensure billing is enabled for real Phone OTP SMS in Firebase.
+- For push notifications, keep users on Firebase mode so device tokens can be registered.

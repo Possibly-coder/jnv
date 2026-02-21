@@ -30,16 +30,17 @@ func RequireAuth(authProvider auth.Provider, store *store.Store) func(http.Handl
 				return
 			}
 
-			if claims.Phone == "" {
-				log.Printf("[auth] token missing phone")
-				http.Error(w, "missing phone", http.StatusUnauthorized)
+			principal := principalFromClaims(claims)
+			if principal == "" {
+				log.Printf("[auth] token missing principal")
+				http.Error(w, "missing identity", http.StatusUnauthorized)
 				return
 			}
-			log.Printf("[auth] claims phone=%s role=%s", claims.Phone, claims.Role)
+			log.Printf("[auth] claims principal=%s role=%s", principal, claims.Role)
 
-			user, err := store.GetUserByPhone(r.Context(), claims.Phone)
+			user, err := store.GetUserByPhone(r.Context(), principal)
 			if err != nil {
-				log.Printf("[auth] user lookup failed for phone=%s err=%v", claims.Phone, err)
+				log.Printf("[auth] user lookup failed for principal=%s err=%v", principal, err)
 				http.Error(w, "failed to load user", http.StatusInternalServerError)
 				return
 			}
@@ -63,12 +64,12 @@ func RequireAuth(authProvider auth.Provider, store *store.Store) func(http.Handl
 				created, createErr := store.CreateUser(r.Context(), models.User{
 					Role:     role,
 					FullName: fullName,
-					Phone:    claims.Phone,
+					Phone:    principal,
 					Email:    claims.Email,
 					SchoolID: schoolID,
 				})
 				if createErr != nil {
-					log.Printf("[auth] user auto-create failed for phone=%s err=%v", claims.Phone, createErr)
+					log.Printf("[auth] user auto-create failed for principal=%s err=%v", principal, createErr)
 					http.Error(w, "failed to create user", http.StatusInternalServerError)
 					return
 				}
@@ -114,4 +115,17 @@ func bearerToken(value string) string {
 		return ""
 	}
 	return value[len(prefix):]
+}
+
+func principalFromClaims(claims auth.Claims) string {
+	if phone := strings.TrimSpace(claims.Phone); phone != "" {
+		return phone
+	}
+	if email := strings.ToLower(strings.TrimSpace(claims.Email)); email != "" {
+		return "email:" + email
+	}
+	if uid := strings.TrimSpace(claims.UID); uid != "" {
+		return "uid:" + uid
+	}
+	return ""
 }

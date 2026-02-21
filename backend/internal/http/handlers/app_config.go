@@ -13,8 +13,10 @@ type AppConfigHandler struct {
 }
 
 type upsertAppConfigRequest struct {
-	FeatureFlags     map[string]bool          `json:"feature_flags"`
-	DashboardWidgets []models.DashboardWidget `json:"dashboard_widgets"`
+	FeatureFlags        map[string]bool          `json:"feature_flags"`
+	DashboardWidgets    []models.DashboardWidget `json:"dashboard_widgets"`
+	MinSupportedVersion string                   `json:"min_supported_version"`
+	ForceUpdateMessage  string                   `json:"force_update_message"`
 }
 
 func (h AppConfigHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -53,14 +55,19 @@ func (h AppConfigHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 		req.DashboardWidgets = []models.DashboardWidget{}
 	}
 	if err := h.Store.UpsertAppConfig(r.Context(), models.AppConfig{
-		SchoolID:         user.SchoolID,
-		FeatureFlags:     req.FeatureFlags,
-		DashboardWidgets: req.DashboardWidgets,
-		UpdatedBy:        user.ID,
+		SchoolID:            user.SchoolID,
+		FeatureFlags:        req.FeatureFlags,
+		DashboardWidgets:    req.DashboardWidgets,
+		MinSupportedVersion: req.MinSupportedVersion,
+		ForceUpdateMessage:  req.ForceUpdateMessage,
+		UpdatedBy:           user.ID,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save config")
 		return
 	}
+	auditLog(r.Context(), "app_config.updated", user, map[string]interface{}{
+		"min_supported_version": req.MinSupportedVersion,
+	})
 	config, err := h.Store.GetAppConfig(r.Context(), user.SchoolID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "saved but failed to reload config")

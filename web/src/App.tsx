@@ -1,5 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ConfirmationResult,
+  onAuthStateChanged,
+  RecaptchaVerifier,
+  signInWithPhoneNumber,
+  signInWithPopup,
+  signOut,
+} from 'firebase/auth';
 import './styles.css';
+import { firebaseAuth, firebaseConfigured, googleProvider } from './firebase';
 
 type ParentLink = {
   id: string;
@@ -38,6 +47,27 @@ type EventRecord = {
   published: boolean;
 };
 
+type AnnouncementRecord = {
+  id: string;
+  title: string;
+  content?: string;
+  category?: string;
+  priority?: string;
+  published?: boolean;
+};
+
+function isEventRecord(value: unknown): value is EventRecord {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.id === 'string' && typeof item.title === 'string';
+}
+
+function isAnnouncementRecord(value: unknown): value is AnnouncementRecord {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.id === 'string' && typeof item.title === 'string';
+}
+
 type DashboardWidgetRecord = {
   key: string;
   label: string;
@@ -49,13 +79,42 @@ type DashboardWidgetRecord = {
 type AppConfigRecord = {
   feature_flags: Record<string, boolean>;
   dashboard_widgets: DashboardWidgetRecord[];
+  min_supported_version?: string;
+  force_update_message?: string;
 };
 
-const API_BASE_URL = 'https://jnv-web.onrender.com';
+type UserRecord = {
+  id: string;
+  full_name: string;
+  phone: string;
+  role: string;
+  email: string;
+};
+
+type AuditLogRecord = {
+  id: string;
+  action: string;
+  user_id: string;
+  user_role: string;
+  created_at: string;
+  payload: string;
+};
+
+const API_BASE_URL =
+  (import.meta.env.VITE_API_BASE_URL as string | undefined)
+    ?.trim()
+    .replace(/\/+$/, '') || 'https://jnv-web.onrender.com';
 
 export default function App() {
-  const [token, setToken] = useState('dev:+919999999999:admin');
+  const [token, setToken] = useState('');
+  const [authUserLabel, setAuthUserLabel] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [phoneAuthBusy, setPhoneAuthBusy] = useState(false);
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [phoneOtp, setPhoneOtp] = useState('');
+  const [phoneConfirmation, setPhoneConfirmation] = useState<ConfirmationResult | null>(null);
   const [status, setStatus] = useState('');
+  const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
 
   const [uploadClass, setUploadClass] = useState('Class 10');
   const [uploadExam, setUploadExam] = useState('Term 1 - Quarterly');
@@ -78,7 +137,7 @@ export default function App() {
   const [annCategory, setAnnCategory] = useState('Academic');
   const [annPriority, setAnnPriority] = useState('High');
   const [annMessage, setAnnMessage] = useState('');
-  const [announcements, setAnnouncements] = useState<Array<Record<string, unknown>>>([]);
+  const [announcements, setAnnouncements] = useState<AnnouncementRecord[]>([]);
   const [pendingLinks, setPendingLinks] = useState<ParentLink[]>([]);
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [studentFullName, setStudentFullName] = useState('');
@@ -88,6 +147,7 @@ export default function App() {
   const [studentHouse, setStudentHouse] = useState('Ashoka');
   const [studentParentPhone, setStudentParentPhone] = useState('');
   const [studentAdmissionYear, setStudentAdmissionYear] = useState(`${new Date().getFullYear()}`);
+  const [studentUploadFile, setStudentUploadFile] = useState<File | null>(null);
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [eventTitle, setEventTitle] = useState('');
   const [eventDescription, setEventDescription] = useState('');
@@ -108,6 +168,10 @@ export default function App() {
     { key: 'attendance', label: 'Attend', value: '94.5%', hint: 'Monthly avg', icon: 'check_circle' },
     { key: 'rank', label: 'Rank', value: '#3', hint: 'Class standing', icon: 'emoji_events' },
   ]);
+  const [minSupportedVersion, setMinSupportedVersion] = useState('');
+  const [forceUpdateMessage, setForceUpdateMessage] = useState('');
+  const [users, setUsers] = useState<UserRecord[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
 
   const authHeader = useMemo(() => ({
     Authorization: `Bearer ${token}`,
@@ -118,7 +182,129 @@ export default function App() {
     Authorization: `Bearer ${token}`,
   }), [token]);
 
+  const safeEvents = useMemo(
+    () => events.filter((item) => isEventRecord(item)),
+    [events],
+  );
+  const safeAnnouncements = useMemo(
+    () => announcements.filter((item) => isAnnouncementRecord(item)),
+    [announcements],
+  );
+
+  useEffect(() => {
+    if (!firebaseConfigured || !firebaseAuth) return;
+    const unsub = onAuthStateChanged(firebaseAuth, async (user) => {
+      if (!user) {
+        setToken('');
+        setAuthUserLabel('');
+        return;
+      }
+      const idToken = await user.getIdToken(true);
+      setToken(idToken);
+      setAuthUserLabel(user.email || user.phoneNumber || user.uid);
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (recaptchaRef.current) {
+        recaptchaRef.current.clear();
+        recaptchaRef.current = null;
+      }
+    };
+  }, []);
+
+  const loginWithGoogle = async () => {
+    if (!firebaseConfigured || !firebaseAuth) {
+      setStatus('Firebase web config missing. Set VITE_FIREBASE_* in web/.env.');
+      return;
+    }
+    try {
+      setAuthBusy(true);
+      await signInWithPopup(firebaseAuth, googleProvider);
+      setStatus('Signed in with Firebase.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const logoutFirebase = async () => {
+    if (!firebaseAuth) return;
+    await signOut(firebaseAuth);
+    setPhoneConfirmation(null);
+    setPhoneOtp('');
+    setPhoneNumber('');
+    setStatus('Signed out.');
+  };
+
+  const normalizedPhone = () => {
+    const raw = phoneNumber.trim();
+    if (raw.startsWith('+')) return raw;
+    const digits = raw.replace(/[^0-9]/g, '');
+    if (digits.startsWith('91') && digits.length === 12) {
+      return `+${digits}`;
+    }
+    return `+91${digits}`;
+  };
+
+  const sendPhoneOtp = async () => {
+    if (!firebaseConfigured || !firebaseAuth) {
+      setStatus('Firebase web config missing. Set VITE_FIREBASE_* in web/.env.');
+      return;
+    }
+    const phone = normalizedPhone();
+    if (phone.replace(/[^0-9]/g, '').length < 12) {
+      setStatus('Enter a valid phone number.');
+      return;
+    }
+    try {
+      setPhoneAuthBusy(true);
+      if (recaptchaRef.current) {
+        recaptchaRef.current.clear();
+        recaptchaRef.current = null;
+      }
+      recaptchaRef.current = new RecaptchaVerifier(firebaseAuth, 'recaptcha-container', {
+        size: 'invisible',
+      });
+      const confirmation = await signInWithPhoneNumber(firebaseAuth, phone, recaptchaRef.current);
+      setPhoneConfirmation(confirmation);
+      setStatus('OTP sent to mobile number.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    } finally {
+      setPhoneAuthBusy(false);
+    }
+  };
+
+  const verifyPhoneOtp = async () => {
+    if (!phoneConfirmation) {
+      setStatus('Send OTP first.');
+      return;
+    }
+    if (phoneOtp.trim().length !== 6) {
+      setStatus('Enter 6-digit OTP.');
+      return;
+    }
+    try {
+      setPhoneAuthBusy(true);
+      await phoneConfirmation.confirm(phoneOtp.trim());
+      setPhoneOtp('');
+      setPhoneConfirmation(null);
+      setStatus('Signed in with phone OTP.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    } finally {
+      setPhoneAuthBusy(false);
+    }
+  };
+
   const postJSON = async (path: string, payload: unknown) => {
+    if (!token) {
+      throw new Error('Please sign in first.');
+    }
     const res = await fetch(`${API_BASE_URL}${path}`, {
       method: 'POST',
       headers: authHeader,
@@ -132,6 +318,9 @@ export default function App() {
   };
 
   const getJSON = async (path: string) => {
+    if (!token) {
+      throw new Error('Please sign in first.');
+    }
     const res = await fetch(`${API_BASE_URL}${path}`, {
       headers: authHeader,
     });
@@ -140,6 +329,21 @@ export default function App() {
       throw new Error(body || res.statusText);
     }
     return res.json();
+  };
+
+  const deleteJSON = async (path: string) => {
+    if (!token) {
+      throw new Error('Please sign in first.');
+    }
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      method: 'DELETE',
+      headers: authHeader,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(body || res.statusText);
+    }
+    return res.text();
   };
 
   const handlePublishAnnouncement = async () => {
@@ -165,11 +369,17 @@ export default function App() {
   const loadAnnouncements = async () => {
     try {
       setStatus('Loading announcements...');
-      const items = await getJSON('/api/v1/announcements');
-      setAnnouncements(items);
+      const response = await getJSON('/api/v1/announcements');
+      const items = Array.isArray(response)
+        ? response
+        : (response && typeof response === 'object' && Array.isArray((response as Record<string, unknown>).items))
+          ? ((response as Record<string, unknown>).items as unknown[])
+          : [];
+      setAnnouncements(items.filter((item) => isAnnouncementRecord(item)));
       setStatus('Announcements loaded.');
     } catch (err) {
       setStatus(`Error: ${(err as Error).message}`);
+      setAnnouncements([]);
     }
   };
 
@@ -212,11 +422,28 @@ export default function App() {
     }
   };
 
+  const deleteAnnouncement = async (id: string) => {
+    if (!window.confirm('Delete this announcement? This cannot be undone.')) return;
+    try {
+      setStatus('Deleting announcement...');
+      await deleteJSON(`/api/v1/announcements/${id}`);
+      await loadAnnouncements();
+      setStatus('Announcement deleted.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
+  };
+
   const loadEvents = async () => {
     try {
       setStatus('Loading events...');
-      const items = await getJSON('/api/v1/events');
-      setEvents(Array.isArray(items) ? (items as EventRecord[]) : []);
+      const response = await getJSON('/api/v1/events');
+      const items = Array.isArray(response)
+        ? response
+        : (response && typeof response === 'object' && Array.isArray((response as Record<string, unknown>).items))
+          ? ((response as Record<string, unknown>).items as unknown[])
+          : [];
+      setEvents(items.filter((item) => isEventRecord(item)));
       setStatus('Events loaded.');
     } catch (err) {
       setStatus(`Error: ${(err as Error).message}`);
@@ -267,12 +494,26 @@ export default function App() {
     }
   };
 
+  const deleteEvent = async (id: string) => {
+    if (!window.confirm('Delete this event? This cannot be undone.')) return;
+    try {
+      setStatus('Deleting event...');
+      await deleteJSON(`/api/v1/events/${id}`);
+      await loadEvents();
+      setStatus('Event deleted.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
+  };
+
   const loadAppConfig = async () => {
     try {
       setStatus('Loading app config...');
       const config = await getJSON('/api/v1/app-config') as AppConfigRecord;
       setFeatureFlags(config.feature_flags ?? {});
       setDashboardWidgets(Array.isArray(config.dashboard_widgets) ? config.dashboard_widgets : []);
+      setMinSupportedVersion(config.min_supported_version ?? '');
+      setForceUpdateMessage(config.force_update_message ?? '');
       setStatus('App config loaded.');
     } catch (err) {
       setStatus(`Error: ${(err as Error).message}`);
@@ -285,6 +526,8 @@ export default function App() {
       await postJSON('/api/v1/app-config', {
         feature_flags: featureFlags,
         dashboard_widgets: dashboardWidgets,
+        min_supported_version: minSupportedVersion.trim(),
+        force_update_message: forceUpdateMessage.trim(),
       });
       setStatus('App config saved.');
     } catch (err) {
@@ -300,6 +543,39 @@ export default function App() {
     setDashboardWidgets((prev) =>
       prev.map((item, i) => (i === index ? { ...item, [field]: value } : item))
     );
+  };
+
+  const loadUsers = async () => {
+    try {
+      setStatus('Loading users...');
+      const items = await getJSON('/api/v1/users');
+      setUsers(Array.isArray(items) ? (items as UserRecord[]) : []);
+      setStatus('Users loaded.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
+  };
+
+  const updateUserRole = async (id: string, role: string) => {
+    try {
+      setStatus('Updating user role...');
+      await postJSON(`/api/v1/users/${id}/role`, { role });
+      setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, role } : u)));
+      setStatus('User role updated.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
+  };
+
+  const loadAuditLogs = async () => {
+    try {
+      setStatus('Loading audit logs...');
+      const items = await getJSON('/api/v1/audit-logs?limit=200');
+      setAuditLogs(Array.isArray(items) ? (items as AuditLogRecord[]) : []);
+      setStatus('Audit logs loaded.');
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
   };
 
   const loadStudents = async () => {
@@ -345,6 +621,36 @@ export default function App() {
       setStudentRoll('');
       setStudentDob('');
       setStudentParentPhone('');
+      await loadStudents();
+    } catch (err) {
+      setStatus(`Error: ${(err as Error).message}`);
+    }
+  };
+
+  const handleUploadStudents = async () => {
+    try {
+      if (!studentUploadFile) {
+        setStatus('Please select a CSV/XLSX file for student upload.');
+        return;
+      }
+      setStatus('Uploading student master data...');
+      const formData = new FormData();
+      formData.append('file', studentUploadFile);
+      const res = await fetch(`${API_BASE_URL}/api/v1/students/upload`, {
+        method: 'POST',
+        headers: authOnlyHeader,
+        body: formData,
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        const errors = Array.isArray(body.errors) ? body.errors.join(', ') : res.statusText;
+        throw new Error(errors);
+      }
+      const inserted = Number(body.inserted ?? 0);
+      const failed = Number(body.failed ?? 0);
+      const errors = Array.isArray(body.errors) ? body.errors.slice(0, 5).join(' | ') : '';
+      setStatus(`Student upload complete. Inserted: ${inserted}, Failed: ${failed}${errors ? `, Errors: ${errors}` : ''}`);
+      setStudentUploadFile(null);
       await loadStudents();
     } catch (err) {
       setStatus(`Error: ${(err as Error).message}`);
@@ -433,6 +739,37 @@ export default function App() {
     );
   };
 
+  const downloadCsvTemplate = (filename: string, content: string) => {
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadStudentTemplate = () => {
+    const content = [
+      'full_name,class_label,roll_number,date_of_birth,house,parent_phone,admission_year',
+      'Aarav Sharma,Class 8,12,2012-07-14,Aravali,+919812345678,2023',
+      'Anaya Verma,Class 8,14,2012-03-09,Nilgiri,+919876543210,2023',
+    ].join('\n');
+    downloadCsvTemplate('student_upload_template.csv', content);
+  };
+
+  const downloadScoreTemplate = () => {
+    const content = [
+      'subject,roll_no,student_name,score,max_score,grade',
+      'Mathematics,12,Aarav Sharma,88,100,A',
+      'Science,12,Aarav Sharma,84,100,A',
+      'English,14,Anaya Verma,91,100,A+',
+    ].join('\n');
+    downloadCsvTemplate('score_upload_template.csv', content);
+  };
+
   return (
     <div className="app">
       <header className="app__header">
@@ -445,12 +782,42 @@ export default function App() {
         </div>
         <div className="header-actions">
           <span className="api-badge">API: {API_BASE_URL}</span>
-          <input
-            className="token-input"
-            value={token}
-            onChange={(event) => setToken(event.target.value)}
-            placeholder="Auth token"
-          />
+          {token ? (
+            <>
+              <span className="api-badge">User: {authUserLabel || 'Authenticated'}</span>
+              <button className="app__button" onClick={logoutFirebase}>Logout</button>
+            </>
+          ) : (
+            <>
+              <button className="app__button app__button--primary" onClick={loginWithGoogle} disabled={authBusy}>
+                {authBusy ? 'Signing in...' : 'Sign in with Google'}
+              </button>
+              <input
+                className="token-input"
+                value={phoneNumber}
+                onChange={(event) => setPhoneNumber(event.target.value)}
+                placeholder="Phone (+91...)"
+              />
+              {phoneConfirmation ? (
+                <>
+                  <input
+                    className="token-input"
+                    value={phoneOtp}
+                    onChange={(event) => setPhoneOtp(event.target.value)}
+                    placeholder="OTP"
+                  />
+                  <button className="app__button app__button--primary" onClick={verifyPhoneOtp} disabled={phoneAuthBusy}>
+                    {phoneAuthBusy ? 'Verifying...' : 'Verify OTP'}
+                  </button>
+                </>
+              ) : (
+                <button className="app__button" onClick={sendPhoneOtp} disabled={phoneAuthBusy}>
+                  {phoneAuthBusy ? 'Sending...' : 'Login via Phone'}
+                </button>
+              )}
+              <div id="recaptcha-container" />
+            </>
+          )}
         </div>
       </header>
 
@@ -518,6 +885,20 @@ export default function App() {
           </div>
           <div className="section-actions">
             <button className="app__button app__button--primary" onClick={createStudent}>Add student</button>
+            <button className="app__button" onClick={downloadStudentTemplate}>Download template</button>
+          </div>
+          <div className="file-row">
+            <input
+              type="file"
+              accept=".csv,.xlsx"
+              onChange={(event) => setStudentUploadFile(event.target.files?.[0] ?? null)}
+            />
+            <button className="app__button app__button--primary" onClick={handleUploadStudents}>
+              Upload students
+            </button>
+          </div>
+          <div className="hint">
+            Bulk template columns: full_name,class_label,roll_number,date_of_birth,house,parent_phone,admission_year
           </div>
           {students.length > 0 ? (
             <div className="student-list">
@@ -540,7 +921,7 @@ export default function App() {
               <h2>Upload Scores (Excel/CSV)</h2>
               <p>Columns: Subject, Roll No, Student Name, Marks.</p>
             </div>
-            <button className="app__button">Download template</button>
+            <button className="app__button" onClick={downloadScoreTemplate}>Download template</button>
           </div>
           <div className="form-grid">
             <label className="field">
@@ -746,9 +1127,9 @@ export default function App() {
           <button className="app__button app__button--primary" onClick={handlePublishAnnouncement}>
             Create draft
           </button>
-          {announcements.length > 0 ? (
+          {safeAnnouncements.length > 0 ? (
             <div className="announcement-list">
-              {announcements.map((item) => (
+              {safeAnnouncements.map((item) => (
                 <div className="announcement-item" key={String(item.id)}>
                   <div>
                     <strong>{String(item.title)}</strong>
@@ -757,13 +1138,29 @@ export default function App() {
                   {item.published ? (
                     <span className="badge badge--live">Published</span>
                   ) : (
-                    <button
-                      className="app__button app__button--primary"
-                      onClick={() => publishAnnouncement(String(item.id))}
-                    >
-                      Publish
-                    </button>
+                    <div className="item-actions">
+                      <button
+                        className="app__button app__button--primary"
+                        onClick={() => publishAnnouncement(String(item.id))}
+                      >
+                        Publish
+                      </button>
+                      <button
+                        className="app__button app__button--danger"
+                        onClick={() => deleteAnnouncement(String(item.id))}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   )}
+                  {item.published ? (
+                    <button
+                      className="app__button app__button--danger"
+                      onClick={() => deleteAnnouncement(String(item.id))}
+                    >
+                      Delete
+                    </button>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -823,20 +1220,30 @@ export default function App() {
           <button className="app__button app__button--primary" onClick={createEvent}>
             Create event draft
           </button>
-          {events.length > 0 ? (
+          {safeEvents.length > 0 ? (
             <div className="announcement-list">
-              {events.map((item) => (
+              {safeEvents.map((item) => (
                 <div className="announcement-item" key={item.id}>
                   <div>
                     <strong>{item.title}</strong>
                     <p>{formatDate(item.event_date)} • {item.category || 'General'}</p>
                   </div>
                   {item.published ? (
-                    <span className="badge badge--live">Published</span>
+                    <div className="item-actions">
+                      <span className="badge badge--live">Published</span>
+                      <button className="app__button app__button--danger" onClick={() => deleteEvent(item.id)}>
+                        Delete
+                      </button>
+                    </div>
                   ) : (
-                    <button className="app__button app__button--primary" onClick={() => publishEvent(item.id)}>
-                      Publish
-                    </button>
+                    <div className="item-actions">
+                      <button className="app__button app__button--primary" onClick={() => publishEvent(item.id)}>
+                        Publish
+                      </button>
+                      <button className="app__button app__button--danger" onClick={() => deleteEvent(item.id)}>
+                        Delete
+                      </button>
+                    </div>
                   )}
                 </div>
               ))}
@@ -886,6 +1293,22 @@ export default function App() {
               />
               Show academic tab
             </label>
+            <label className="field">
+              Min supported app version
+              <input
+                value={minSupportedVersion}
+                onChange={(event) => setMinSupportedVersion(event.target.value)}
+                placeholder="e.g. 1.0.3"
+              />
+            </label>
+            <label className="field">
+              Force update message
+              <input
+                value={forceUpdateMessage}
+                onChange={(event) => setForceUpdateMessage(event.target.value)}
+                placeholder="Please update app to continue"
+              />
+            </label>
           </div>
           <table className="score-table">
             <thead>
@@ -909,6 +1332,73 @@ export default function App() {
               ))}
             </tbody>
           </table>
+        </section>
+
+        <section className="card">
+          <h2>User Role Management</h2>
+          <p>Manage school users and update roles for access control.</p>
+          <div className="section-actions">
+            <button className="app__button" onClick={loadUsers}>Load users</button>
+          </div>
+          {users.length === 0 ? (
+            <div className="empty-state">No users loaded yet.</div>
+          ) : (
+            <div className="announcement-list">
+              {users.map((user) => (
+                <div className="announcement-item" key={user.id}>
+                  <div>
+                    <strong>{user.full_name || 'Unknown'}</strong>
+                    <p>{user.phone} • {user.email || '-'}</p>
+                  </div>
+                  <select
+                    value={user.role}
+                    onChange={(event) => updateUserRole(user.id, event.target.value)}
+                  >
+                    <option value="parent">parent</option>
+                    <option value="teacher">teacher</option>
+                    <option value="staff">staff</option>
+                    <option value="admin">admin</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="card card--wide">
+          <h2>Audit Logs</h2>
+          <p>Track sensitive actions performed by admins/staff.</p>
+          <div className="section-actions">
+            <button className="app__button" onClick={loadAuditLogs}>Load logs</button>
+          </div>
+          {auditLogs.length === 0 ? (
+            <div className="empty-state">No audit logs loaded yet.</div>
+          ) : (
+            <table className="score-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Action</th>
+                  <th>User</th>
+                  <th>Role</th>
+                  <th>Payload</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td>{formatDate(log.created_at)}</td>
+                    <td>{log.action}</td>
+                    <td>{log.user_id || '-'}</td>
+                    <td>{log.user_role || '-'}</td>
+                    <td style={{ maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {log.payload}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </section>
 
         <section className="card">

@@ -76,6 +76,9 @@ func (h ParentLinkHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create link")
 		return
 	}
+	auditLog(r.Context(), "parent_link.requested", user, map[string]interface{}{
+		"student_id": req.StudentID,
+	})
 	writeJSON(w, http.StatusCreated, link)
 }
 
@@ -141,6 +144,10 @@ func (h ParentLinkHandler) CreateByClassRoll(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "failed to create link")
 		return
 	}
+	auditLog(r.Context(), "parent_link.requested", user, map[string]interface{}{
+		"student_id": student.ID,
+		"district":   req.District,
+	})
 	writeJSON(w, http.StatusCreated, link)
 }
 
@@ -184,5 +191,8 @@ func (h ParentLinkHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to approve")
 		return
 	}
+	auditLog(r.Context(), "parent_link.approved", user, map[string]interface{}{
+		"parent_link_id": id,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "approved"})
 }

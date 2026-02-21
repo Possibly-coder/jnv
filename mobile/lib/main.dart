@@ -5,8 +5,13 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
-const kApiBaseUrl = 'https://jnv-web.onrender.com';
+const String kApiBaseUrl = String.fromEnvironment(
+  'API_BASE_URL',
+  defaultValue: 'https://jnv-web.onrender.com',
+);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -47,14 +52,24 @@ class _AuthGateState extends State<AuthGate> {
   bool _isLoadingOverview = false;
   bool _needsChildLinking = false;
   bool _isPendingApproval = false;
+  bool _requiresUpdate = false;
   bool _firebaseReady = false;
+  bool _messagingInitialized = false;
+  String _currentAppVersion = '0.0.0';
+  String _forceUpdateMessage = 'Please update the app to continue.';
+  String? _pendingNotificationType;
+  String? _pendingEntityID;
   SessionUser? _sessionUser;
   ParentStudent? _linkedStudent;
   List<ParentScore> _linkedScores = const [];
   List<ParentAnnouncement> _announcements = const [];
   List<ParentEvent> _events = const [];
-  ParentAppConfig _appConfig =
-      const ParentAppConfig(featureFlags: {}, dashboardWidgets: []);
+  ParentAppConfig _appConfig = const ParentAppConfig(
+    featureFlags: {},
+    dashboardWidgets: [],
+    minSupportedVersion: '',
+    forceUpdateMessage: '',
+  );
   String _apiBase = kApiBaseUrl;
   String _authToken = '';
 
@@ -66,16 +81,43 @@ class _AuthGateState extends State<AuthGate> {
 
   Future<void> _bootstrap() async {
     setState(() => _isLoadingOverview = true);
+    await _loadAppVersion();
     await _initializeFirebase();
     await _restoreSession();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      _currentAppVersion = info.version;
+    } catch (_) {
+      _currentAppVersion = '0.0.0';
+    }
   }
 
   Future<void> _initializeFirebase() async {
     try {
       await Firebase.initializeApp();
       _firebaseReady = true;
+      await _setupMessaging();
     } catch (_) {
       _firebaseReady = false;
+    }
+  }
+
+  Future<void> _setupMessaging() async {
+    if (_messagingInitialized) return;
+    _messagingInitialized = true;
+
+    FirebaseMessaging.onMessage.listen((message) {
+      _handleNotificationMessage(message, openedFromTap: false);
+    });
+    FirebaseMessaging.onMessageOpenedApp.listen((message) {
+      _handleNotificationMessage(message, openedFromTap: true);
+    });
+    final initialMessage = await FirebaseMessaging.instance.getInitialMessage();
+    if (initialMessage != null) {
+      _handleNotificationMessage(initialMessage, openedFromTap: true);
     }
   }
 
@@ -139,8 +181,11 @@ class _AuthGateState extends State<AuthGate> {
       final overview = await client.getParentOverview(_authToken);
       List<ParentAnnouncement> announcements = const [];
       List<ParentEvent> events = const [];
-      ParentAppConfig config =
-          const ParentAppConfig(featureFlags: {}, dashboardWidgets: []);
+      ParentAppConfig config = const ParentAppConfig(
+          featureFlags: {},
+          dashboardWidgets: [],
+          minSupportedVersion: '',
+          forceUpdateMessage: '');
       if (overview.status == 'approved' && overview.student != null) {
         final results = await Future.wait([
           client.fetchAnnouncements(_authToken),
@@ -150,14 +195,23 @@ class _AuthGateState extends State<AuthGate> {
         announcements = results[0] as List<ParentAnnouncement>;
         events = results[1] as List<ParentEvent>;
         config = results[2] as ParentAppConfig;
+        if (_firebaseReady) {
+          await _registerDeviceToken(client);
+        }
       }
       if (!mounted) return;
+      final shouldForceUpdate =
+          _isVersionOutdated(_currentAppVersion, config.minSupportedVersion);
       setState(() {
         _linkedStudent = overview.student;
         _linkedScores = overview.scores;
         _announcements = announcements;
         _events = events;
         _appConfig = config;
+        _requiresUpdate = shouldForceUpdate;
+        _forceUpdateMessage = config.forceUpdateMessage.trim().isEmpty
+            ? 'Please update the app to continue.'
+            : config.forceUpdateMessage.trim();
         _needsChildLinking = overview.status == 'not_linked';
         _isPendingApproval = overview.status == 'pending';
         _isAuthenticated =
@@ -171,13 +225,34 @@ class _AuthGateState extends State<AuthGate> {
         _isAuthenticated = false;
         _announcements = const [];
         _events = const [];
-        _appConfig =
-            const ParentAppConfig(featureFlags: {}, dashboardWidgets: []);
+        _appConfig = const ParentAppConfig(
+            featureFlags: {},
+            dashboardWidgets: [],
+            minSupportedVersion: '',
+            forceUpdateMessage: '');
+        _requiresUpdate = false;
       });
     } finally {
       if (mounted) {
         setState(() => _isLoadingOverview = false);
       }
+    }
+  }
+
+  void _handleNotificationMessage(RemoteMessage message,
+      {required bool openedFromTap}) {
+    final type = (message.data['type'] ?? '').toString();
+    final announcementID = (message.data['announcement_id'] ?? '').toString();
+    final eventID = (message.data['event_id'] ?? '').toString();
+    if (!mounted) return;
+    if (openedFromTap) {
+      setState(() {
+        _pendingNotificationType = type;
+        _pendingEntityID = announcementID.isNotEmpty ? announcementID : eventID;
+      });
+    }
+    if (_sessionUser != null) {
+      _refreshParentOverview();
     }
   }
 
@@ -224,6 +299,15 @@ class _AuthGateState extends State<AuthGate> {
       );
     }
 
+    if (_requiresUpdate) {
+      return ForceUpdateScreen(
+        currentVersion: _currentAppVersion,
+        minVersion: _appConfig.minSupportedVersion,
+        message: _forceUpdateMessage,
+        onRetry: _refreshParentOverview,
+      );
+    }
+
     if (_isAuthenticated) {
       return ParentShell(
         sessionUser: _sessionUser,
@@ -232,6 +316,14 @@ class _AuthGateState extends State<AuthGate> {
         announcements: _announcements,
         events: _events,
         appConfig: _appConfig,
+        initialNotificationType: _pendingNotificationType,
+        initialNotificationEntityID: _pendingEntityID,
+        onNotificationConsumed: () {
+          setState(() {
+            _pendingNotificationType = null;
+            _pendingEntityID = null;
+          });
+        },
         onLogout: () async {
           await _clearSession();
           if (!mounted) return;
@@ -242,8 +334,12 @@ class _AuthGateState extends State<AuthGate> {
             _linkedScores = const [];
             _announcements = const [];
             _events = const [];
-            _appConfig =
-                const ParentAppConfig(featureFlags: {}, dashboardWidgets: []);
+            _appConfig = const ParentAppConfig(
+                featureFlags: {},
+                dashboardWidgets: [],
+                minSupportedVersion: '',
+                forceUpdateMessage: '');
+            _requiresUpdate = false;
           });
         },
       );
@@ -262,6 +358,35 @@ class _AuthGateState extends State<AuthGate> {
         _refreshParentOverview();
       },
     );
+  }
+
+  Future<void> _registerDeviceToken(BackendClient client) async {
+    try {
+      await FirebaseMessaging.instance.requestPermission();
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token == null || token.isEmpty) return;
+      await client.registerDeviceToken(_authToken, token);
+    } catch (_) {
+      // Ignore token registration failures in app runtime.
+    }
+  }
+
+  bool _isVersionOutdated(String current, String minRequired) {
+    if (minRequired.trim().isEmpty) return false;
+    List<int> parse(String value) =>
+        value.split('.').map((part) => int.tryParse(part) ?? 0).toList();
+    final currentParts = parse(current);
+    final minParts = parse(minRequired);
+    final length = currentParts.length > minParts.length
+        ? currentParts.length
+        : minParts.length;
+    for (var i = 0; i < length; i++) {
+      final left = i < currentParts.length ? currentParts[i] : 0;
+      final right = i < minParts.length ? minParts[i] : 0;
+      if (left < right) return true;
+      if (left > right) return false;
+    }
+    return false;
   }
 }
 
@@ -455,10 +580,14 @@ class DashboardMetric {
 class ParentAppConfig {
   final Map<String, bool> featureFlags;
   final List<DashboardMetric> dashboardWidgets;
+  final String minSupportedVersion;
+  final String forceUpdateMessage;
 
   const ParentAppConfig({
     required this.featureFlags,
     required this.dashboardWidgets,
+    required this.minSupportedVersion,
+    required this.forceUpdateMessage,
   });
 
   bool isEnabled(String key, {bool fallback = true}) {
@@ -480,6 +609,8 @@ class ParentAppConfig {
               .map(DashboardMetric.fromJson)
               .toList()
           : const [],
+      minSupportedVersion: (json['min_supported_version'] ?? '').toString(),
+      forceUpdateMessage: (json['force_update_message'] ?? '').toString(),
     );
   }
 }
@@ -634,9 +765,32 @@ class BackendClient {
     }
     final body = jsonDecode(response.body);
     if (body is! Map<String, dynamic>) {
-      return const ParentAppConfig(featureFlags: {}, dashboardWidgets: []);
+      return const ParentAppConfig(
+        featureFlags: {},
+        dashboardWidgets: [],
+        minSupportedVersion: '',
+        forceUpdateMessage: '',
+      );
     }
     return ParentAppConfig.fromJson(body);
+  }
+
+  Future<void> registerDeviceToken(String token, String deviceToken) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/v1/devices/token'),
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'token': deviceToken,
+        'platform': 'android',
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+          'Device token registration failed (${response.statusCode}): ${_extractError(response.body)}');
+    }
   }
 
   String _extractError(String body) {
@@ -867,10 +1021,10 @@ class _AuthScreenState extends State<AuthScreen> {
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: const Color(0xFFE2E8F0)),
                       ),
-                      child: const Text(
-                        'Server: https://jnv-web.onrender.com',
-                        style:
-                            TextStyle(fontSize: 12, color: Color(0xFF475569)),
+                      child: Text(
+                        'Server: $_apiBase',
+                        style: const TextStyle(
+                            fontSize: 12, color: Color(0xFF475569)),
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -1217,6 +1371,71 @@ class PendingApprovalScreen extends StatelessWidget {
   }
 }
 
+class ForceUpdateScreen extends StatelessWidget {
+  final String currentVersion;
+  final String minVersion;
+  final String message;
+  final VoidCallback onRetry;
+
+  const ForceUpdateScreen({
+    super.key,
+    required this.currentVersion,
+    required this.minVersion,
+    required this.message,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Container(
+          margin: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: const [
+              BoxShadow(
+                  color: Color(0x14000000),
+                  blurRadius: 14,
+                  offset: Offset(0, 8))
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.system_update_alt,
+                  size: 46, color: Color(0xFF4F46E5)),
+              const SizedBox(height: 12),
+              const Text(
+                'Update Required',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Color(0xFF64748B)),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Current: $currentVersion  •  Required: $minVersion',
+                style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+              ),
+              const SizedBox(height: 14),
+              FilledButton.tonal(
+                onPressed: onRetry,
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class ParentShell extends StatefulWidget {
   final SessionUser? sessionUser;
   final ParentStudent? student;
@@ -1224,6 +1443,9 @@ class ParentShell extends StatefulWidget {
   final List<ParentAnnouncement> announcements;
   final List<ParentEvent> events;
   final ParentAppConfig appConfig;
+  final String? initialNotificationType;
+  final String? initialNotificationEntityID;
+  final VoidCallback onNotificationConsumed;
   final VoidCallback onLogout;
 
   const ParentShell({
@@ -1235,6 +1457,9 @@ class ParentShell extends StatefulWidget {
     required this.announcements,
     required this.events,
     required this.appConfig,
+    required this.initialNotificationType,
+    required this.initialNotificationEntityID,
+    required this.onNotificationConsumed,
   });
 
   @override
@@ -1243,6 +1468,82 @@ class ParentShell extends StatefulWidget {
 
 class _ParentShellState extends State<ParentShell> {
   int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _applyNotificationRouting();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant ParentShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialNotificationType != oldWidget.initialNotificationType ||
+        widget.initialNotificationEntityID != oldWidget.initialNotificationEntityID) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _applyNotificationRouting();
+      });
+    }
+  }
+
+  int _tabIndex(String tab) {
+    final showAcademic = widget.appConfig.isEnabled('show_academic_tab');
+    final showEvents = widget.appConfig.isEnabled('show_events', fallback: true);
+    final showNews =
+        widget.appConfig.isEnabled('show_announcements', fallback: true);
+    var cursor = 0; // home
+    if (tab == 'home') return cursor;
+    if (showAcademic) {
+      cursor++;
+      if (tab == 'academic') return cursor;
+    }
+    if (showEvents) {
+      cursor++;
+      if (tab == 'events') return cursor;
+    }
+    if (showNews) {
+      cursor++;
+      if (tab == 'news') return cursor;
+    }
+    return 0;
+  }
+
+  void _applyNotificationRouting() {
+    final type = widget.initialNotificationType;
+    final entityID = widget.initialNotificationEntityID;
+    if (type == null || type.isEmpty) return;
+
+    if (type == 'announcement') {
+      setState(() => _index = _tabIndex('news'));
+      if (entityID != null && entityID.isNotEmpty) {
+        final match = widget.announcements.where((a) => a.id == entityID).toList();
+        if (match.isNotEmpty) {
+          final item = match.first;
+          _showInfoDialog(
+            context: context,
+            title: item.title,
+            subtitle:
+                '${item.createdAt != null ? '${item.createdAt!.day} ${_monthName(item.createdAt!.month)} ${item.createdAt!.year}' : 'Recent'}  |  ${item.category.isEmpty ? 'General' : item.category}',
+            content: item.content,
+          );
+        }
+      }
+      widget.onNotificationConsumed();
+      return;
+    }
+    if (type == 'event') {
+      setState(() => _index = _tabIndex('events'));
+      widget.onNotificationConsumed();
+      return;
+    }
+    if (type == 'score_upload') {
+      setState(() => _index = _tabIndex('academic'));
+      widget.onNotificationConsumed();
+      return;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1255,6 +1556,9 @@ class _ParentShellState extends State<ParentShell> {
         events: widget.events,
         announcements: widget.announcements,
         appConfig: widget.appConfig,
+        onViewAllScores: () => setState(() => _index = _tabIndex('academic')),
+        onViewAllEvents: () => setState(() => _index = _tabIndex('events')),
+        onViewAllAnnouncements: () => setState(() => _index = _tabIndex('news')),
       ),
       if (showAcademic) const AcademicScreen(),
       if (widget.appConfig.isEnabled('show_events', fallback: true))
@@ -1362,6 +1666,9 @@ class DashboardScreen extends StatelessWidget {
   final List<ParentEvent> events;
   final List<ParentAnnouncement> announcements;
   final ParentAppConfig appConfig;
+  final VoidCallback onViewAllScores;
+  final VoidCallback onViewAllEvents;
+  final VoidCallback onViewAllAnnouncements;
 
   const DashboardScreen({
     super.key,
@@ -1371,6 +1678,9 @@ class DashboardScreen extends StatelessWidget {
     required this.events,
     required this.announcements,
     required this.appConfig,
+    required this.onViewAllScores,
+    required this.onViewAllEvents,
+    required this.onViewAllAnnouncements,
   });
 
   @override
@@ -1390,21 +1700,23 @@ class DashboardScreen extends StatelessWidget {
                   dashboardWidgets: appConfig.dashboardWidgets,
                 ),
                 const SizedBox(height: 16),
-                const SectionHeader(
+                SectionHeader(
                   icon: Icons.menu_book_rounded,
                   iconColor: Color(0xFF16A34A),
                   title: 'Recent Scores',
                   subtitle: 'Last 4 tests',
+                  onViewAll: onViewAllScores,
                 ),
                 const SizedBox(height: 12),
                 RecentScoresCard(scores: scores),
                 const SizedBox(height: 20),
                 if (appConfig.isEnabled('show_events', fallback: true)) ...[
-                  const SectionHeader(
+                  SectionHeader(
                     icon: Icons.event_available_rounded,
                     iconColor: Color(0xFF7C3AED),
                     title: 'Upcoming Events',
                     subtitle: 'Next 3 events',
+                    onViewAll: onViewAllEvents,
                   ),
                   const SizedBox(height: 12),
                   UpcomingEventsCard(events: events),
@@ -1412,11 +1724,12 @@ class DashboardScreen extends StatelessWidget {
                 ],
                 if (appConfig.isEnabled('show_announcements',
                     fallback: true)) ...[
-                  const SectionHeader(
+                  SectionHeader(
                     icon: Icons.notifications_active_rounded,
                     iconColor: Color(0xFFF97316),
                     title: 'Announcements',
                     subtitle: 'Recent updates',
+                    onViewAll: onViewAllAnnouncements,
                   ),
                   const SizedBox(height: 12),
                   AnnouncementsCard(announcements: announcements),
@@ -1585,6 +1898,7 @@ class SectionHeader extends StatelessWidget {
   final Color iconColor;
   final String title;
   final String subtitle;
+  final VoidCallback? onViewAll;
 
   const SectionHeader({
     super.key,
@@ -1592,6 +1906,7 @@ class SectionHeader extends StatelessWidget {
     required this.iconColor,
     required this.title,
     required this.subtitle,
+    this.onViewAll,
   });
 
   @override
@@ -1623,11 +1938,19 @@ class SectionHeader extends StatelessWidget {
             ),
           ],
         ),
-        const Text('View All',
+        GestureDetector(
+          onTap: onViewAll,
+          child: Text(
+            'View All',
             style: TextStyle(
-                color: Color(0xFF4F46E5),
-                fontWeight: FontWeight.w600,
-                fontSize: 12)),
+              color: onViewAll != null
+                  ? const Color(0xFF4F46E5)
+                  : const Color(0xFF94A3B8),
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
+            ),
+          ),
+        ),
       ],
     );
   }

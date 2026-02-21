@@ -39,7 +39,7 @@ admin_ref AS (
   WHERE u.phone = '+919999999999'
   LIMIT 1
 )
-INSERT INTO app_configs (school_id, feature_flags, dashboard_widgets, updated_by, updated_at)
+INSERT INTO app_configs (school_id, feature_flags, dashboard_widgets, min_supported_version, force_update_message, updated_by, updated_at)
 SELECT ar.school_id,
        '{
          "show_events": true,
@@ -52,6 +52,8 @@ SELECT ar.school_id,
          {"key":"attendance","label":"Attend","value":"94.5%","hint":"Monthly avg","icon":"check_circle"},
          {"key":"rank","label":"Rank","value":"#3","hint":"Class standing","icon":"emoji_events"}
        ]'::jsonb,
+       '',
+       '',
        ar.id,
        now()
 FROM admin_ref ar

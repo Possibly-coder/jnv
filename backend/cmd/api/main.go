@@ -10,6 +10,7 @@ import (
 	"jnv/backend/internal/config"
 	"jnv/backend/internal/db"
 	"jnv/backend/internal/http"
+	"jnv/backend/internal/notify"
 	"jnv/backend/internal/store"
 )
 
@@ -28,6 +29,7 @@ func main() {
 	store := store.New(dbConn)
 
 	var authProvider auth.Provider
+	var notifier notify.Sender = notify.NoopSender{}
 	switch cfg.AuthMode {
 	case "dev":
 		authProvider = auth.DevProvider{DefaultPhone: cfg.DevAuthPhone}
@@ -40,13 +42,28 @@ func main() {
 			log.Fatalf("failed to initialize firebase auth provider: %v", providerErr)
 		}
 		authProvider = firebaseProvider
+		firebaseNotifier, notifyErr := notify.NewFirebaseSender(
+			context.Background(),
+			cfg.FirebaseCredentialsFile,
+			store,
+		)
+		if notifyErr != nil {
+			log.Printf("warning: failed to initialize firebase notifier: %v", notifyErr)
+		} else {
+			notifier = firebaseNotifier
+		}
 	default:
 		log.Fatalf("unsupported AUTH_MODE: %s", cfg.AuthMode)
 	}
 
 	server := &http.Server{
-		Addr:         cfg.HTTPAddr,
-		Handler:      httpapi.API{Store: store, AuthProvider: authProvider}.Router(),
+		Addr: cfg.HTTPAddr,
+		Handler: httpapi.API{
+			Store:         store,
+			AuthProvider:  authProvider,
+			Notifier:      notifier,
+			CORSAllowList: cfg.CORSAllowedOrigins,
+		}.Router(),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  30 * time.Second,

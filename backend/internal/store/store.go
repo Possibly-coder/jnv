@@ -382,6 +382,24 @@ func (s *Store) PublishAnnouncement(ctx context.Context, announcementID string) 
 	return err
 }
 
+func (s *Store) DeleteAnnouncement(ctx context.Context, announcementID, schoolID string) error {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM announcements
+		WHERE id = $1 AND school_id = $2
+	`, announcementID, schoolID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) ListAnnouncements(ctx context.Context, schoolID string, includeUnpublished bool) ([]models.Announcement, error) {
 	query := `
 		SELECT id, school_id, title, content, category, priority, published, created_by, created_at
@@ -441,6 +459,24 @@ func (s *Store) PublishEvent(ctx context.Context, eventID string) error {
 	return err
 }
 
+func (s *Store) DeleteEvent(ctx context.Context, eventID, schoolID string) error {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM events
+		WHERE id = $1 AND school_id = $2
+	`, eventID, schoolID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) ListEvents(ctx context.Context, schoolID string, includeUnpublished bool) ([]models.Event, error) {
 	query := `
 		SELECT id, school_id, title, description, event_date, start_time, end_time,
@@ -475,14 +511,23 @@ func (s *Store) ListEvents(ctx context.Context, schoolID string, includeUnpublis
 
 func (s *Store) GetAppConfig(ctx context.Context, schoolID string) (*models.AppConfig, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT school_id, feature_flags, dashboard_widgets, coalesce(updated_by::text, ''), updated_at
+		SELECT school_id, feature_flags, dashboard_widgets, min_supported_version,
+		       force_update_message, coalesce(updated_by::text, ''), updated_at
 		FROM app_configs
 		WHERE school_id = $1
 	`, schoolID)
 	var config models.AppConfig
 	var featureFlagsRaw []byte
 	var dashboardWidgetsRaw []byte
-	if err := row.Scan(&config.SchoolID, &featureFlagsRaw, &dashboardWidgetsRaw, &config.UpdatedBy, &config.UpdatedAt); err != nil {
+	if err := row.Scan(
+		&config.SchoolID,
+		&featureFlagsRaw,
+		&dashboardWidgetsRaw,
+		&config.MinSupportedVersion,
+		&config.ForceUpdateMessage,
+		&config.UpdatedBy,
+		&config.UpdatedAt,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return &models.AppConfig{
 				SchoolID:         schoolID,
@@ -521,15 +566,121 @@ func (s *Store) UpsertAppConfig(ctx context.Context, config models.AppConfig) er
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO app_configs (school_id, feature_flags, dashboard_widgets, updated_by, updated_at)
-		VALUES ($1, $2::jsonb, $3::jsonb, $4, now())
+		INSERT INTO app_configs (
+			school_id, feature_flags, dashboard_widgets, min_supported_version,
+			force_update_message, updated_by, updated_at
+		)
+		VALUES ($1, $2::jsonb, $3::jsonb, $4, $5, $6, now())
 		ON CONFLICT (school_id) DO UPDATE
 		SET feature_flags = excluded.feature_flags,
 		    dashboard_widgets = excluded.dashboard_widgets,
+		    min_supported_version = excluded.min_supported_version,
+		    force_update_message = excluded.force_update_message,
 		    updated_by = excluded.updated_by,
 		    updated_at = now()
-	`, config.SchoolID, string(featureFlags), string(dashboardWidgets), config.UpdatedBy)
+	`, config.SchoolID, string(featureFlags), string(dashboardWidgets), config.MinSupportedVersion, config.ForceUpdateMessage, config.UpdatedBy)
 	return err
+}
+
+func (s *Store) ListUsersBySchool(ctx context.Context, schoolID string) ([]models.User, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id::text, coalesce(school_id::text, ''), role, full_name, phone, email, created_at
+		FROM users
+		WHERE school_id = $1 OR role = 'super_admin'
+		ORDER BY created_at DESC
+	`, schoolID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []models.User{}
+	for rows.Next() {
+		var user models.User
+		if err := rows.Scan(&user.ID, &user.SchoolID, &user.Role, &user.FullName, &user.Phone, &user.Email, &user.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, user)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) UpdateUserRole(ctx context.Context, userID string, role models.Role) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE users
+		SET role = $2
+		WHERE id = $1
+	`, userID, role)
+	return err
+}
+
+func (s *Store) UpsertDeviceToken(ctx context.Context, userID, token, platform string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO device_tokens (id, user_id, token, platform, created_at)
+		VALUES ($1, $2, $3, $4, now())
+		ON CONFLICT (token) DO UPDATE
+		SET user_id = excluded.user_id, platform = excluded.platform
+	`, uuid.NewString(), userID, token, platform)
+	return err
+}
+
+func (s *Store) ListDeviceTokensBySchoolRole(ctx context.Context, schoolID string, role models.Role) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT dt.token
+		FROM device_tokens dt
+		JOIN users u ON u.id = dt.user_id
+		WHERE u.school_id = $1 AND u.role = $2
+	`, schoolID, role)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tokens []string
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			return nil, err
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens, rows.Err()
+}
+
+func (s *Store) CreateAuditEvent(ctx context.Context, event models.AuditEvent) error {
+	if event.ID == "" {
+		event.ID = uuid.NewString()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO audit_events (id, school_id, user_id, user_role, action, payload, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, now())
+	`, event.ID, event.SchoolID, event.UserID, event.UserRole, event.Action, event.Payload)
+	return err
+}
+
+func (s *Store) ListAuditEventsBySchool(ctx context.Context, schoolID string, limit int) ([]models.AuditEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id::text, coalesce(school_id::text,''), coalesce(user_id::text,''), user_role, action, payload, created_at
+		FROM audit_events
+		WHERE school_id = $1 OR school_id IS NULL
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, schoolID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []models.AuditEvent{}
+	for rows.Next() {
+		var item models.AuditEvent
+		if err := rows.Scan(&item.ID, &item.SchoolID, &item.UserID, &item.UserRole, &item.Action, &item.Payload, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *Store) CreateExam(ctx context.Context, exam models.Exam) (*models.Exam, error) {

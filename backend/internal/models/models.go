@@ -132,9 +132,29 @@ type DashboardWidget struct {
 }
 
 type AppConfig struct {
-	SchoolID         string            `json:"school_id"`
-	FeatureFlags     map[string]bool   `json:"feature_flags"`
-	DashboardWidgets []DashboardWidget `json:"dashboard_widgets"`
-	UpdatedBy        string            `json:"updated_by"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	SchoolID            string            `json:"school_id"`
+	FeatureFlags        map[string]bool   `json:"feature_flags"`
+	DashboardWidgets    []DashboardWidget `json:"dashboard_widgets"`
+	MinSupportedVersion string            `json:"min_supported_version"`
+	ForceUpdateMessage  string            `json:"force_update_message"`
+	UpdatedBy           string            `json:"updated_by"`
+	UpdatedAt           time.Time         `json:"updated_at"`
+}
+
+type DeviceToken struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Token     string    `json:"token"`
+	Platform  string    `json:"platform"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type AuditEvent struct {
+	ID        string    `json:"id"`
+	SchoolID  string    `json:"school_id"`
+	UserID    string    `json:"user_id"`
+	UserRole  string    `json:"user_role"`
+	Action    string    `json:"action"`
+	Payload   string    `json:"payload"`
+	CreatedAt time.Time `json:"created_at"`
 }

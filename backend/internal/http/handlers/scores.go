@@ -16,11 +16,13 @@ import (
 
 	"jnv/backend/internal/httpctx"
 	"jnv/backend/internal/models"
+	"jnv/backend/internal/notify"
 	"jnv/backend/internal/store"
 )
 
 type ScoresHandler struct {
-	Store *store.Store
+	Store    *store.Store
+	Notifier notify.Sender
 }
 
 type createScoresRequest struct {
@@ -77,6 +79,14 @@ func (h ScoresHandler) AddForExam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to add scores")
 		return
 	}
+	_ = h.Notifier.SendToSchoolParents(r.Context(), user.SchoolID, "Scores updated", "New exam scores were uploaded.", map[string]string{
+		"type":    "score_upload",
+		"exam_id": examID,
+	})
+	auditLog(r.Context(), "scores.created.manual", user, map[string]interface{}{
+		"exam_id": examID,
+		"count":   len(scores),
+	})
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "uploaded"})
 }
 
@@ -181,6 +191,14 @@ func (h ScoresHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to add scores")
 		return
 	}
+	_ = h.Notifier.SendToSchoolParents(r.Context(), user.SchoolID, "Scores uploaded", "Bulk scores have been published by school staff.", map[string]string{
+		"type":    "score_upload",
+		"exam_id": examID,
+	})
+	auditLog(r.Context(), "scores.created.bulk", user, map[string]interface{}{
+		"exam_id": examID,
+		"count":   len(scores),
+	})
 
 	writeJSON(w, http.StatusCreated, csvUploadResponse{Inserted: len(scores), Errors: nil})
 }
@@ -413,9 +431,9 @@ func readSheetRows(file *zip.File, sharedStrings []string) ([][]string, error) {
 		T string `xml:"t"`
 	}
 	type cell struct {
-		R string     `xml:"r,attr"`
-		T string     `xml:"t,attr"`
-		V string     `xml:"v"`
+		R  string     `xml:"r,attr"`
+		T  string     `xml:"t,attr"`
+		V  string     `xml:"v"`
 		IS *inlineStr `xml:"is"`
 	}
 	type row struct {

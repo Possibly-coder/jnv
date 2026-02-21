@@ -236,6 +236,12 @@ body {
   font-size: 12px;
 }
 
+.item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .student-list {
   display: flex;
   flex-direction: column;
@@ -289,6 +295,12 @@ body {
 
 .app__button--primary {
   background: #1e40af;
+  color: white;
+  border: none;
+}
+
+.app__button--danger {
+  background: #dc2626;
   color: white;
   border: none;
 }
