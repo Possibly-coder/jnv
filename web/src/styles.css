@@ -23,7 +23,7 @@ body {
   align-items: center;
   padding: 24px 32px;
   border-radius: 24px;
-  background: linear-gradient(135deg, #4f46e5, #3b82f6);
+  background: linear-gradient(135deg, #0b1f3b, #13396b);
   color: white;
 }
 
@@ -67,10 +67,12 @@ body {
 }
 
 .app__logo {
-  width: 48px;
-  height: 48px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.25);
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  object-fit: cover;
+  background: white;
+  border: 2px solid #d4af37;
 }
 
 .app__header h1 {
@@ -294,7 +296,7 @@ body {
 }
 
 .app__button--primary {
-  background: #1e40af;
+  background: #0b1f3b;
   color: white;
   border: none;
 }

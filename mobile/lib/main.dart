@@ -8,6 +8,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+const Color kBrandNavy = Color(0xFF0B1F3B);
+const Color kBrandNavyLight = Color(0xFF13396B);
+const Color kBrandGold = Color(0xFFD4AF37);
+
 const String kApiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'https://jnv-web.onrender.com',
@@ -27,7 +31,10 @@ class JnvApp extends StatelessWidget {
       title: 'JNV Parent Portal',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4F46E5)),
+        colorScheme: ColorScheme.fromSeed(seedColor: kBrandNavy).copyWith(
+          primary: kBrandNavy,
+          secondary: kBrandGold,
+        ),
         useMaterial3: true,
         fontFamily: 'Roboto',
       ),
@@ -1612,7 +1619,7 @@ class HeaderBar extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 50, 20, 16),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [Color(0xFF4F46E5), Color(0xFF3B82F6)],
+          colors: [kBrandNavy, kBrandNavyLight],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -1625,10 +1632,18 @@ class HeaderBar extends StatelessWidget {
         children: [
           Row(
             children: [
-              const CircleAvatar(
-                radius: 22,
-                backgroundColor: Color(0xFF6366F1),
-                child: Icon(Icons.menu_book, color: Colors.white),
+              Container(
+                width: 44,
+                height: 44,
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.asset('assets/jnv-logo.png', fit: BoxFit.cover),
+                ),
               ),
               const SizedBox(width: 12),
               Column(
@@ -1642,7 +1657,7 @@ class HeaderBar extends StatelessWidget {
                   Text(
                     subtitle,
                     style:
-                        const TextStyle(color: Color(0xFFDCE3FF), fontSize: 12),
+                        const TextStyle(color: Color(0xFFF4E6B2), fontSize: 12),
                   ),
                 ],
               ),
@@ -1651,7 +1666,7 @@ class HeaderBar extends StatelessWidget {
           const CircleAvatar(
             radius: 20,
             backgroundColor: Colors.white24,
-            child: Icon(Icons.menu, color: Colors.white),
+            child: Icon(Icons.auto_awesome, color: Color(0xFFF4E6B2)),
           ),
         ],
       ),

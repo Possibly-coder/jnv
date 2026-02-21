@@ -774,7 +774,7 @@ export default function App() {
     <div className="app">
       <header className="app__header">
         <div className="app__brand">
-          <span className="app__logo" />
+          <img className="app__logo" src="/jnv-logo.png" alt="JNV logo" />
           <div>
             <h1>JNV Admin Portal</h1>
             <p>Scores, announcements, and approvals</p>
