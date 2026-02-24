@@ -194,14 +194,24 @@ class _AuthGateState extends State<AuthGate> {
           minSupportedVersion: '',
           forceUpdateMessage: '');
       if (overview.status == 'approved' && overview.student != null) {
-        final results = await Future.wait([
-          client.fetchAnnouncements(_authToken),
-          client.fetchEvents(_authToken),
-          client.fetchAppConfig(_authToken),
-        ]);
-        announcements = results[0] as List<ParentAnnouncement>;
-        events = results[1] as List<ParentEvent>;
-        config = results[2] as ParentAppConfig;
+        try {
+          final results = await Future.wait([
+            client.fetchAnnouncements(_authToken),
+            client.fetchEvents(_authToken),
+            client.fetchAppConfig(_authToken),
+          ]);
+          announcements = results[0] as List<ParentAnnouncement>;
+          events = results[1] as List<ParentEvent>;
+          config = results[2] as ParentAppConfig;
+        } catch (_) {
+          announcements = const [];
+          events = const [];
+          config = const ParentAppConfig(
+              featureFlags: {},
+              dashboardWidgets: [],
+              minSupportedVersion: '',
+              forceUpdateMessage: '');
+        }
         if (_firebaseReady) {
           await _registerDeviceToken(client);
         }
