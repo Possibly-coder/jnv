@@ -278,8 +278,9 @@ class _AuthGateState extends State<AuthGate> {
         onRequested: () {
           setState(() {
             _needsChildLinking = false;
+            _isPendingApproval = true;
+            _isAuthenticated = false;
           });
-          _refreshParentOverview();
         },
         onLogout: () {
           _clearSession();
