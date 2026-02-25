@@ -1,7 +1,7 @@
 name: jnv_mobile
 description: JNV parent mobile app
 publish_to: "none"
-version: 0.1.4+5
+version: 0.1.5+6
 
 environment:
   sdk: ">=3.2.0 <4.0.0"

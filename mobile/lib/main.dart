@@ -848,7 +848,6 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _otpSent = false;
   bool _loading = false;
   String _status = '';
-  final String _apiBase = kApiBaseUrl;
   String _verificationId = '';
   int? _resendToken;
   int _resendSeconds = 0;
@@ -951,7 +950,7 @@ class _AuthScreenState extends State<AuthScreen> {
       _status = '';
     });
     try {
-      final client = BackendClient(_apiBase.trim());
+      final client = BackendClient(kApiBaseUrl.trim());
       String authToken;
 
       if (widget.firebaseEnabled) {
@@ -1017,6 +1016,24 @@ class _AuthScreenState extends State<AuthScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Center(
+                      child: Container(
+                        width: 74,
+                        height: 74,
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: kBrandGold, width: 1.5),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: Image.asset('assets/jnv-logo.png',
+                              fit: BoxFit.cover),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     const Text(
                       'JNV Parent Portal',
                       style:
@@ -1029,23 +1046,12 @@ class _AuthScreenState extends State<AuthScreen> {
                           : 'Login with phone and OTP',
                       style: const TextStyle(color: Color(0xFF64748B)),
                     ),
-                    const SizedBox(height: 18),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF1F5F9),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Text(
-                        'Server: $_apiBase',
-                        style: const TextStyle(
-                            fontSize: 12, color: Color(0xFF475569)),
-                      ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Track marks, announcements, and events in one secure app.',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 18),
                     Row(
                       children: [
                         Expanded(

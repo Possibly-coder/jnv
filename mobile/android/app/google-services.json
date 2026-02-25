@@ -22,6 +22,14 @@
           }
         },
         {
+          "client_id": "82029786185-g9pi76rg3is9oka5ig95hbftk7vn2hi9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.jnv_mobile",
+            "certificate_hash": "6d303d23b03626544c7cff8620e10249cc39b560"
+          }
+        },
+        {
           "client_id": "82029786185-vgq04rnrc14lt5u1mdmubfmv6bhg2n91.apps.googleusercontent.com",
           "client_type": 3
         }
@@ -51,11 +59,19 @@
       },
       "oauth_client": [
         {
-          "client_id": "82029786185-m7qc8pljcsstt3svhvra78h7ffdem9c4.apps.googleusercontent.com",
+          "client_id": "82029786185-foacecmk36fpgvcvnsv1215vclc2umi8.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
             "package_name": "in.jnv.parentportal",
-            "certificate_hash": "58ba3a4e6d68096a4e29dbe2b65c3cf335268303"
+            "certificate_hash": "fa3a6c23c3c75a8b09ce39932af1cbefba71d28a"
+          }
+        },
+        {
+          "client_id": "82029786185-sj695cl3v3no0lnhaa0v55pn718n23ue.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "in.jnv.parentportal",
+            "certificate_hash": "6d303d23b03626544c7cff8620e10249cc39b560"
           }
         },
         {
